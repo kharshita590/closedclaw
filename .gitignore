@@ -1,0 +1,52 @@
+# Environment & secrets
+.env
+.env.*
+!.env.example
+secrets/
+*.enc
+*.key
+
+# OAuth tokens
+token.json
+*_token.json
+*_credentials.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Node (WhatsApp bridge)
+node_modules/
+.wwebjs_auth/
+.wwebjs_cache/
+
+# Logs & audit trails
+logs/
+*.log
+*.jsonl
+
+# Persistent data volumes
+memory/
+*.db
+*.sqlite
+
+# Browser sandbox artifacts
+screenshots/
+*.png
+*.pdf
+
+# Docker
+.docker/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
