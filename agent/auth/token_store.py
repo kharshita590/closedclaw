@@ -4,11 +4,32 @@ import os
 from pathlib import Path
 
 from cryptography.fernet import Fernet, InvalidToken
+from dotenv import load_dotenv
+
+def _detect_project_root() -> Path:
+    here = Path(__file__).resolve()
+    candidates = [
+        Path(os.getenv("PROJECT_ROOT", "")) if os.getenv("PROJECT_ROOT") else None,
+        here.parents[2] if len(here.parents) > 2 else None,
+        here.parents[1] if len(here.parents) > 1 else None,
+        Path.cwd(),
+    ]
+    for candidate in candidates:
+        if candidate and ((candidate / ".env").exists() or (candidate / "secrets").exists()):
+            return candidate
+    return here.parents[1]
+
+
+PROJECT_ROOT = _detect_project_root()
+load_dotenv(PROJECT_ROOT / ".env")
 
 
 class TokenStore:
     def __init__(self, secrets_dir: str = "secrets") -> None:
-        self.secrets_dir = Path(secrets_dir)
+        path = Path(secrets_dir).expanduser()
+        if path == Path("/secrets") and (PROJECT_ROOT / "secrets").exists():
+            path = PROJECT_ROOT / "secrets"
+        self.secrets_dir = path if path.is_absolute() else PROJECT_ROOT / path
         self.secrets_dir.mkdir(parents=True, exist_ok=True)
         key = os.getenv("TOKEN_ENCRYPTION_KEY")
         if not key:
