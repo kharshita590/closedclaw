@@ -8,6 +8,7 @@ services:
     environment:
       PROJECT_ROOT: /app
       SECRETS_DIR: secrets
+      GOOGLE_CLIENT_SECRET_FILE: /app/secrets/google_client_secret.json
     ports:
       - "8000:8000"
     volumes:
@@ -28,6 +29,7 @@ services:
     env_file: .env
     environment:
       PROJECT_ROOT: /app
+      GOOGLE_CLIENT_SECRET_FILE: /app/secrets/google_client_secret.json
     tmpfs:
       - /tmp
     networks:
@@ -46,6 +48,8 @@ services:
     container_name: ui
     restart: unless-stopped
     env_file: .env
+    environment:
+      GOOGLE_CLIENT_SECRET_FILE: /app/secrets/google_client_secret.json
     ports:
       - "8501:8501"
     volumes:
@@ -60,20 +64,30 @@ services:
   # Uncomment whichever you need.
 
   # slack-bridge:
-  #   build: ./bridges/slack
+  #   build:
+  #     context: ./bridges
+  #     dockerfile: slack/Dockerfile
   #   container_name: slack-bridge
   #   restart: unless-stopped
   #   env_file: .env
+  #   volumes:
+  #     - ./channel_policy.yaml:/app/channel_policy.yaml
+  #     - ./memory:/app/memory
   #   ports:
   #     - "8081:8080"
   #   networks:
   #     - internal
 
   # telegram-bridge:
-  #   build: ./bridges/telegram
+  #   build:
+  #     context: ./bridges
+  #     dockerfile: telegram/Dockerfile
   #   container_name: telegram-bridge
   #   restart: unless-stopped
   #   env_file: .env
+  #   volumes:
+  #     - ./channel_policy.yaml:/app/channel_policy.yaml
+  #     - ./memory:/app/memory
   #   ports:
   #     - "8082:8080"
   #   networks:
@@ -86,6 +100,8 @@ services:
   #   env_file: .env
   #   volumes:
   #     - whatsapp_session:/app/.wwebjs_auth
+  #     - ./channel_policy.yaml:/app/channel_policy.yaml
+  #     - ./memory:/app/memory
   #   networks:
   #     - internal
 

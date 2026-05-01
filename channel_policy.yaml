@@ -1,0 +1,13 @@
+{
+  "channels": {
+    "slack": {
+      "allowed_senders": []
+    },
+    "telegram": {
+      "allowed_senders": []
+    },
+    "whatsapp": {
+      "allowed_senders": []
+    }
+  }
+}

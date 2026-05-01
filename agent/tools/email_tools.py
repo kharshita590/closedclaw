@@ -9,6 +9,7 @@ from googleapiclient.discovery import build
 
 from auth.oauth import load_credentials
 from auth.scopes import GMAIL_SCOPES
+from permissions.registry import require_scope
 
 
 class EmailTools:
@@ -19,6 +20,7 @@ class EmailTools:
     def available(self) -> bool:
         return self.service is not None
 
+    @require_scope("email:read")
     def list_messages(self, query: str = "in:inbox newer_than:14d", limit: int = 10) -> list[dict[str, Any]]:
         self._require()
         result = self.service.users().messages().list(userId="me", q=query, maxResults=limit).execute()
@@ -27,6 +29,7 @@ class EmailTools:
             messages.append(self.get_message(item["id"], metadata_only=True))
         return messages
 
+    @require_scope("email:read")
     def get_message(self, message_id: str, metadata_only: bool = False) -> dict[str, Any]:
         self._require()
         fmt = "metadata" if metadata_only else "full"
@@ -43,6 +46,7 @@ class EmailTools:
             "body": "" if metadata_only else self._body_from_payload(msg.get("payload", {})),
         }
 
+    @require_scope("email:send")
     def create_draft(self, to: str, subject: str, body: str, thread_id: str | None = None) -> dict[str, Any]:
         self._require()
         raw = self._raw_message(to=to, subject=subject, body=body)
@@ -51,6 +55,7 @@ class EmailTools:
             draft_body["message"]["threadId"] = thread_id
         return self.service.users().drafts().create(userId="me", body=draft_body).execute()
 
+    @require_scope("email:send")
     def send_email(self, to: str, subject: str, body: str, thread_id: str | None = None) -> dict[str, Any]:
         self._require()
         payload: dict[str, Any] = {"raw": self._raw_message(to=to, subject=subject, body=body)}
@@ -58,10 +63,12 @@ class EmailTools:
             payload["threadId"] = thread_id
         return self.service.users().messages().send(userId="me", body=payload).execute()
 
+    @require_scope("email:delete")
     def delete_message(self, message_id: str) -> None:
         self._require()
         self.service.users().messages().trash(userId="me", id=message_id).execute()
 
+    @require_scope("email:delete")
     def clear_spam(self, limit: int = 50) -> int:
         self._require()
         result = self.service.users().messages().list(userId="me", q="in:spam", maxResults=limit).execute()

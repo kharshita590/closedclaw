@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import re
-import uuid
 
+from actions.models import BrowserNavigateAction, ClearSpamAction, DeleteEmailAction, SendEmailAction
+from approvals.ledger import ApprovalLedger
 from audit.logger import AuditLogger
 from graph.state import ChatRequest, ChatResponse, PendingAction
 from llm.client import LLMClient, LLMDecision
+from policy.policy_engine import PolicyEngine
 from subgraphs.email_agent import EmailAgent
 from subgraphs.research_agent import ResearchAgent
 from tools.calendar_tools import CalendarTools
@@ -20,6 +22,8 @@ class SupervisorAgent:
         self.calendar = CalendarTools()
         self.research_agent = ResearchAgent()
         self.llm = LLMClient()
+        self.approvals = ApprovalLedger()
+        self.policy = PolicyEngine(self.approvals)
 
     async def handle(self, request: ChatRequest) -> ChatResponse:
         text = request.message.strip()
@@ -52,7 +56,7 @@ class SupervisorAgent:
     async def _execute_decision(self, request: ChatRequest, decision: LLMDecision) -> ChatResponse:
         text = request.message.strip()
         if decision.intent == "draft_email":
-            return self._draft_email_action(request)
+            return self._send_email_action(request)
         if decision.intent == "destructive_email":
             return self._destructive_email_action(request)
         if decision.intent == "latest_email":
@@ -69,7 +73,12 @@ class SupervisorAgent:
             return self._calendar_response(request)
         if decision.intent == "browser":
             try:
-                result = await self.research_agent.research(text, decision.start_url or self._first_url(text))
+                action = BrowserNavigateAction(goal=text, url=decision.start_url or self._first_url(text))
+                policy = self.policy.check(action)
+                if not policy.allowed:
+                    self.approvals.create(action, request.user_id, status="rejected", result={"reason": policy.reason})
+                    return ChatResponse(response=f"Browser action rejected by policy: {policy.reason}")
+                result = await self.research_agent.research(action.goal, action.url)
                 return ChatResponse(response=result.get("summary", "Browser task completed."), data={"browser": result})
             except Exception as exc:
                 return ChatResponse(response=f"Browser automation failed: {exc}")
@@ -118,26 +127,32 @@ class SupervisorAgent:
             return LLMDecision(intent="search_memory", confidence=0.8, query=text.removeprefix("search memory ").strip())
         return LLMDecision(intent="general", confidence=0.0)
 
-    def _draft_email_action(self, request: ChatRequest) -> ChatResponse:
-        action = PendingAction(
-            id=str(uuid.uuid4()),
-            action_type="email.send_or_draft",
-            summary="Review the email draft before it is created or sent.",
-            payload={"instruction": request.message, "mode": "draft_first"},
-            channel=request.channel,
-            user_id=request.user_id,
-        )
+    def _send_email_action(self, request: ChatRequest) -> ChatResponse:
+        try:
+            action_plan = self._parse_send_email(request.message)
+        except ValueError as exc:
+            return ChatResponse(response=f"I need a safer email format before creating an approval: {exc}")
+        policy = self.policy.check(action_plan)
+        if not policy.allowed:
+            self.approvals.create(action_plan, request.user_id, status="rejected", result={"reason": policy.reason})
+            return ChatResponse(response=f"Email action rejected by policy: {policy.reason}")
+        action = self.approvals.create(action_plan, request.user_id)
         return ChatResponse(response="I prepared an email action for approval.", actions=[action])
 
     def _destructive_email_action(self, request: ChatRequest) -> ChatResponse:
-        action = PendingAction(
-            id=str(uuid.uuid4()),
-            action_type="email.destructive",
-            summary="This may delete or permanently remove email. Approval required.",
-            payload={"instruction": request.message},
-            channel=request.channel,
-            user_id=request.user_id,
-        )
+        lowered = request.message.lower()
+        if "clear spam" in lowered:
+            action_plan = ClearSpamAction()
+        else:
+            match = re.search(r"(?:message|email)\s+id\s+([A-Za-z0-9_-]+)", request.message)
+            if not match:
+                return ChatResponse(response="To delete mail safely, include the exact message id, for example: delete email id abc123.")
+            action_plan = DeleteEmailAction(message_id=match.group(1))
+        policy = self.policy.check(action_plan)
+        if not policy.allowed:
+            self.approvals.create(action_plan, request.user_id, status="rejected", result={"reason": policy.reason})
+            return ChatResponse(response=f"Email cleanup rejected by policy: {policy.reason}")
+        action = self.approvals.create(action_plan, request.user_id)
         return ChatResponse(response="This email cleanup needs approval before I run it.", actions=[action])
 
     def _calendar_response(self, request: ChatRequest) -> ChatResponse:
@@ -156,3 +171,17 @@ class SupervisorAgent:
     def _first_url(self, text: str) -> str | None:
         match = re.search(r"https?://\S+", text)
         return match.group(0) if match else None
+
+    def _parse_send_email(self, text: str) -> SendEmailAction:
+        """Builds a typed SendEmailAction from a constrained natural-language format."""
+
+        recipient_match = re.search(r"\bto\s+([^\s,;]+@[^\s,;]+)", text, flags=re.IGNORECASE)
+        if not recipient_match:
+            raise ValueError("include a recipient like 'to name@example.com'")
+        subject_match = re.search(r"\bsubject\s+(.+?)(?:\s+body\s+|\s+message\s+|$)", text, flags=re.IGNORECASE)
+        body_match = re.search(r"\b(?:body|message)\s+(.+)$", text, flags=re.IGNORECASE)
+        subject = subject_match.group(1).strip(" :\"'") if subject_match else "No subject"
+        body = body_match.group(1).strip(" :\"'") if body_match else ""
+        if not body:
+            raise ValueError("include a body like 'body hello, following up...'")
+        return SendEmailAction(recipient=recipient_match.group(1), subject=subject, body=body)

@@ -7,6 +7,7 @@ from googleapiclient.discovery import build
 
 from auth.oauth import load_credentials
 from auth.scopes import CALENDAR_SCOPES
+from permissions.registry import require_scope
 
 
 class CalendarTools:
@@ -17,6 +18,7 @@ class CalendarTools:
     def available(self) -> bool:
         return self.service is not None
 
+    @require_scope("calendar:read")
     def upcoming_events(self, days: int = 7, limit: int = 20) -> list[dict[str, Any]]:
         self._require()
         now = datetime.now(timezone.utc)
@@ -35,6 +37,7 @@ class CalendarTools:
         )
         return result.get("items", [])
 
+    @require_scope("calendar:write")
     def create_event(
         self,
         summary: str,
@@ -54,6 +57,7 @@ class CalendarTools:
         }
         return self.service.events().insert(calendarId="primary", body=event, sendUpdates="all").execute()
 
+    @require_scope("calendar:write")
     def reschedule_event(self, event_id: str, start: str, end: str, timezone_name: str = "Asia/Kolkata") -> dict[str, Any]:
         self._require()
         event = self.service.events().get(calendarId="primary", eventId=event_id).execute()
@@ -61,6 +65,7 @@ class CalendarTools:
         event["end"] = {"dateTime": end, "timeZone": timezone_name}
         return self.service.events().update(calendarId="primary", eventId=event_id, body=event, sendUpdates="all").execute()
 
+    @require_scope("calendar:read")
     def find_free_slots(
         self,
         start: str,

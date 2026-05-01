@@ -4,10 +4,13 @@ import httpx
 import streamlit as st
 
 
-def render_approvals(agent_url: str) -> None:
+def render_approvals(agent_url: str, headers: dict[str, str] | None = None) -> None:
+    """Renders pending approvals and posts approval decisions with API auth headers."""
+
+    headers = headers or {}
     st.subheader("Pending approvals")
     try:
-        approvals = httpx.get(f"{agent_url}/approvals", timeout=10).json()
+        approvals = httpx.get(f"{agent_url}/approvals", headers=headers, timeout=10).json()
     except Exception as exc:
         st.info(f"Approval service unavailable: {exc}")
         return
@@ -20,8 +23,8 @@ def render_approvals(agent_url: str) -> None:
             st.code(action["payload"])
             cols = st.columns(2)
             if cols[0].button("Approve", key=f"approve-{action['id']}"):
-                httpx.post(f"{agent_url}/approvals/{action['id']}", json={"decision": "approved"}, timeout=10)
+                httpx.post(f"{agent_url}/approvals/{action['id']}", headers=headers, json={"decision": "approved", "decided_by": "ui"}, timeout=10)
                 st.rerun()
             if cols[1].button("Reject", key=f"reject-{action['id']}"):
-                httpx.post(f"{agent_url}/approvals/{action['id']}", json={"decision": "rejected"}, timeout=10)
+                httpx.post(f"{agent_url}/approvals/{action['id']}", headers=headers, json={"decision": "rejected", "decided_by": "ui"}, timeout=10)
                 st.rerun()

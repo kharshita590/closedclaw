@@ -12,6 +12,14 @@ from components.calendar_diff import render_calendar_events
 
 
 AGENT_URL = os.getenv("AGENT_URL", "http://agent:8000").rstrip("/")
+AGENT_API_KEY = os.getenv("AGENT_API_KEY") or os.getenv("AGENT_API_KEYS", "").split(",")[0].strip()
+
+
+def _agent_headers() -> dict[str, str]:
+    """Builds auth headers for Streamlit calls to the agent API."""
+
+    return {"Authorization": f"Bearer {AGENT_API_KEY}"} if AGENT_API_KEY else {}
+
 
 st.set_page_config(page_title="ClosedClaw", page_icon="CC", layout="wide")
 st.title("ClosedClaw Personal Agent")
@@ -31,7 +39,7 @@ with left:
         st.session_state.messages.append({"role": "user", "content": prompt})
         payload = {"message": prompt, "channel": "ui", "user_id": os.getenv("USER", "local-user")}
         try:
-            result = httpx.post(f"{AGENT_URL}/chat", json=payload, timeout=120).json()
+            result = httpx.post(f"{AGENT_URL}/chat", headers=_agent_headers(), json=payload, timeout=120).json()
             answer = result["response"]
             st.session_state.messages.append({"role": "assistant", "content": answer})
             st.session_state.last_data = result.get("data", {})
@@ -48,12 +56,12 @@ with left:
 with right:
     st.subheader("Agent config")
     try:
-        config = httpx.get(f"{AGENT_URL}/config", timeout=5).json()
+        config = httpx.get(f"{AGENT_URL}/config", headers=_agent_headers(), timeout=5).json()
         st.json(config)
     except Exception as exc:
         st.caption(f"Config unavailable: {exc}")
 
-    render_approvals(AGENT_URL)
+    render_approvals(AGENT_URL, _agent_headers())
     st.subheader("Recent audit")
     audit_file = Path("/app/logs/audit.jsonl")
     if not audit_file.exists():

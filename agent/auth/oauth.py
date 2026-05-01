@@ -7,6 +7,7 @@ from typing import Sequence
 
 from dotenv import load_dotenv
 from google.auth.transport.requests import Request
+from google.auth.exceptions import GoogleAuthError, TransportError
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 
@@ -31,16 +32,23 @@ load_dotenv(PROJECT_ROOT / ".env")
 
 
 def load_credentials(token_name: str, scopes: Sequence[str]) -> Credentials | None:
+    """Loads encrypted Google credentials, returning None if refresh is unavailable."""
+
     store = TokenStore(str(_project_path(os.getenv("SECRETS_DIR", "secrets"))))
     raw = store.read(token_name)
     creds = Credentials.from_authorized_user_info(json.loads(raw), scopes) if raw else None
     if creds and creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-        store.write(token_name, creds.to_json().encode("utf-8"))
+        try:
+            creds.refresh(Request())
+            store.write(token_name, creds.to_json().encode("utf-8"))
+        except (GoogleAuthError, TransportError, OSError):
+            return None
     return creds if creds and creds.valid else None
 
 
 def run_local_oauth(token_name: str, scopes: Sequence[str]) -> Credentials:
+    """Runs an interactive local OAuth flow and stores encrypted credentials."""
+
     credentials_file = _project_path(os.getenv("GOOGLE_CLIENT_SECRET_FILE", "secrets/google_client_secret.json"))
     if not credentials_file.exists():
         raise FileNotFoundError(
@@ -54,6 +62,8 @@ def run_local_oauth(token_name: str, scopes: Sequence[str]) -> Credentials:
 
 
 def _project_path(value: str) -> Path:
+    """Resolves project-relative paths while handling Docker container roots."""
+
     path = Path(value).expanduser()
     if path == Path("/secrets") and (PROJECT_ROOT / "secrets").exists():
         return PROJECT_ROOT / "secrets"
