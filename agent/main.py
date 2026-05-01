@@ -24,6 +24,15 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/config")
+def config() -> dict[str, str | bool]:
+    return {
+        "llm_provider": agent.supervisor.llm.provider,
+        "llm_model": agent.supervisor.llm.model,
+        "llm_enabled": agent.supervisor.llm.enabled(),
+    }
+
+
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest) -> ChatResponse:
     response = await agent.invoke(request)

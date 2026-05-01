@@ -11,6 +11,7 @@ ClosedClaw is a local-first scaffold for a personal coding and productivity agen
 - Multi-channel: Streamlit UI plus Slack, Telegram, and WhatsApp bridge entry points.
 - Approvals: risky tasks create pending approvals instead of immediately sending, deleting, or booking.
 - Audit: channel messages and approval decisions are written to JSONL logs.
+- LLM routing: choose deterministic routing, bring your own OpenAI-compatible API key, or local Ollama.
 
 ## Run locally
 
@@ -53,3 +54,41 @@ curl -X POST http://localhost:8000/chat \
   -H 'content-type: application/json' \
   -d '{"message":"browse https://example.com and summarize it","channel":"ui","user_id":"me"}'
 ```
+
+## LLM options
+
+The agent supports three routing modes.
+
+Deterministic fallback:
+
+```bash
+LLM_PROVIDER=none
+```
+
+Bring your own OpenAI-compatible API key:
+
+```bash
+LLM_PROVIDER=api
+LLM_MODEL=gpt-4o-mini
+LLM_API_KEY=your_api_key
+LLM_API_BASE_URL=https://api.openai.com/v1
+```
+
+You can also point `LLM_API_BASE_URL` at any service that implements `/chat/completions`.
+
+Local Ollama:
+
+```bash
+LLM_PROVIDER=ollama
+LLM_MODEL=llama3.1
+OLLAMA_BASE_URL=http://host.docker.internal:11434
+```
+
+Before starting Docker, run on the host:
+
+```bash
+ollama pull llama3.1
+ollama serve
+```
+
+The LLM only chooses the intent and handles general conversation. Email, calendar, browser, memory, and approval behavior still runs through the local tool layer.

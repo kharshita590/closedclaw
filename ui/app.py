@@ -46,6 +46,13 @@ with left:
         render_calendar_events(data["events"])
 
 with right:
+    st.subheader("Agent config")
+    try:
+        config = httpx.get(f"{AGENT_URL}/config", timeout=5).json()
+        st.json(config)
+    except Exception as exc:
+        st.caption(f"Config unavailable: {exc}")
+
     render_approvals(AGENT_URL)
     st.subheader("Recent audit")
     audit_file = Path("/app/logs/audit.jsonl")
