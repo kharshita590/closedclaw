@@ -5,6 +5,9 @@ services:
     container_name: agent
     restart: unless-stopped
     env_file: .env
+    environment:
+      PROJECT_ROOT: /app
+      SECRETS_DIR: secrets
     ports:
       - "8000:8000"
     volumes:
@@ -23,6 +26,8 @@ services:
     # Uncomment the next line once gVisor (runsc) is installed on the host:
     # runtime: runsc
     env_file: .env
+    environment:
+      PROJECT_ROOT: /app
     tmpfs:
       - /tmp
     networks:

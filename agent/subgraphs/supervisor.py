@@ -29,7 +29,12 @@ class SupervisorAgent:
             return self._draft_email_action(request)
         if "delete email" in lowered or "clear spam" in lowered:
             return self._destructive_email_action(request)
-        if any(word in lowered for word in ["summarize email", "inbox", "emails"]):
+        if any(word in lowered for word in ["latest email", "last email", "recent email", "newest email"]):
+            try:
+                return ChatResponse(response=self.email.latest_email())
+            except Exception as exc:
+                return ChatResponse(response=f"Email is not ready: {exc}")
+        if any(word in lowered for word in ["summarize email", "summarise email", "inbox", "email", "emails", "mail"]):
             try:
                 return ChatResponse(response=self.email.summarize_inbox())
             except Exception as exc:
