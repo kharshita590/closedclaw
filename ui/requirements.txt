@@ -1,0 +1,10 @@
+# UI
+streamlit>=1.39.0
+
+# To read LangGraph state & call agent
+langgraph>=0.2.0
+httpx>=0.27.0
+
+# Utilities
+python-dotenv>=1.0.0
+pydantic>=2.9.0

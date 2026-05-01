@@ -1,0 +1,92 @@
+services:
+
+  agent:
+    build: ./agent
+    container_name: agent
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./memory:/app/memory
+      - ./secrets:/app/secrets:ro
+      - ./logs:/app/logs
+    networks:
+      - internal
+    depends_on:
+      - browser-sandbox
+
+  browser-sandbox:
+    build: ./browser-sandbox
+    container_name: browser-sandbox
+    restart: unless-stopped
+    # Uncomment the next line once gVisor (runsc) is installed on the host:
+    # runtime: runsc
+    env_file: .env
+    tmpfs:
+      - /tmp
+    networks:
+      - internal
+    volumes:
+      - ./browser-sandbox/screenshots:/app/screenshots
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1g
+    cpus: "1.0"
+
+  ui:
+    build: ./ui
+    container_name: ui
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./memory:/app/memory:ro
+      - ./logs:/app/logs:ro
+    networks:
+      - internal
+    depends_on:
+      - agent
+
+  # ── Optional bridges ──────────────────────────────────────────────────────
+  # Uncomment whichever you need.
+
+  # slack-bridge:
+  #   build: ./bridges/slack
+  #   container_name: slack-bridge
+  #   restart: unless-stopped
+  #   env_file: .env
+  #   ports:
+  #     - "8081:8080"
+  #   networks:
+  #     - internal
+
+  # telegram-bridge:
+  #   build: ./bridges/telegram
+  #   container_name: telegram-bridge
+  #   restart: unless-stopped
+  #   env_file: .env
+  #   ports:
+  #     - "8082:8080"
+  #   networks:
+  #     - internal
+
+  # whatsapp-bridge:
+  #   build: ./bridges/whatsapp
+  #   container_name: whatsapp-bridge
+  #   restart: unless-stopped
+  #   env_file: .env
+  #   volumes:
+  #     - whatsapp_session:/app/.wwebjs_auth
+  #   networks:
+  #     - internal
+
+networks:
+  internal:
+    driver: bridge
+
+volumes:
+  whatsapp_session:

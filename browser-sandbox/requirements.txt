@@ -1,0 +1,13 @@
+# Web framework
+fastapi>=0.115.0
+uvicorn[standard]>=0.31.0
+
+# Browser automation
+playwright>=1.47.0
+
+# HTML to Markdown
+markdownify>=0.13.1
+
+# Utilities
+python-dotenv>=1.0.0
+pydantic>=2.9.0
