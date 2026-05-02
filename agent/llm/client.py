@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any, Literal
 
 import httpx
@@ -38,6 +39,7 @@ class LLMClient:
         self.api_key = os.getenv("LLM_API_KEY", "")
         self.api_base_url = os.getenv("LLM_API_BASE_URL", "https://api.openai.com/v1").rstrip("/")
         self.ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://host.docker.internal:11434").rstrip("/")
+        self.last_raw_response = ""
 
     def enabled(self) -> bool:
         if self.provider == "ollama":
@@ -64,6 +66,27 @@ class LLMClient:
             f"User: {message}"
         )
         return await self._complete(prompt, temperature=0.3)
+
+    async def extract_json(self, prompt: str) -> dict[str, Any]:
+        """Return a JSON object extracted from a deterministic LLM completion.
+
+        The supervisor uses this for planning and parameter extraction while
+        keeping all tool execution in typed action models and policy checks.
+        Markdown fences are stripped before parsing because chat models often
+        wrap otherwise valid JSON in code blocks.
+        """
+
+        if not self.enabled():
+            return {}
+        raw = await self._complete(prompt, temperature=0.0)
+        self.last_raw_response = raw
+        cleaned = self._strip_markdown_fences(raw).strip()
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            start = cleaned.index("{")
+            end = cleaned.rindex("}") + 1
+            return json.loads(cleaned[start:end])
 
     async def _complete(self, prompt: str, temperature: float) -> str:
         if self.provider == "ollama":
@@ -131,6 +154,13 @@ User request: {message}
             return LLMDecision.model_validate_json(raw[start:end])
         except Exception:
             return LLMDecision(intent="general", confidence=0.0, response=raw.strip() or None)
+
+    def _strip_markdown_fences(self, raw: str) -> str:
+        """Remove a single surrounding markdown code fence from an LLM response."""
+
+        text = raw.strip()
+        match = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.DOTALL | re.IGNORECASE)
+        return match.group(1) if match else text
 
     def _default_model(self) -> str:
         provider = os.getenv("LLM_PROVIDER", "none").strip().lower()
