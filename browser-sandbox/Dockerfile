@@ -2,6 +2,8 @@ FROM python:3.12-slim
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
 # Playwright system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 \
@@ -17,6 +19,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN uv pip install --system --no-cache -r requirements.txt
 RUN playwright install chromium
+RUN chmod -R 755 /ms-playwright
 
 COPY . .
 RUN chown -R sandbox:sandbox /app

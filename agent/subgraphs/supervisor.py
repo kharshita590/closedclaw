@@ -61,16 +61,16 @@ class SupervisorAgent:
             return self._destructive_email_action(request)
         if decision.intent == "latest_email":
             try:
-                return ChatResponse(response=self.email.latest_email())
+                return ChatResponse(response=await self.email.latest_email())
             except Exception as exc:
                 return ChatResponse(response=f"Email is not ready: {exc}")
         if decision.intent == "summarize_email":
             try:
-                return ChatResponse(response=self.email.summarize_inbox())
+                return ChatResponse(response=await self.email.summarize_inbox())
             except Exception as exc:
                 return ChatResponse(response=f"Email is not ready: {exc}")
         if decision.intent == "calendar":
-            return self._calendar_response(request)
+            return await self._calendar_response(request)
         if decision.intent == "browser":
             try:
                 action = BrowserNavigateAction(goal=text, url=decision.start_url or self._first_url(text))
@@ -155,9 +155,11 @@ class SupervisorAgent:
         action = self.approvals.create(action_plan, request.user_id)
         return ChatResponse(response="This email cleanup needs approval before I run it.", actions=[action])
 
-    def _calendar_response(self, request: ChatRequest) -> ChatResponse:
+    async def _calendar_response(self, request: ChatRequest) -> ChatResponse:
+        """Return upcoming calendar events through the async CalendarTools wrapper."""
+
         try:
-            events = self.calendar.upcoming_events()
+            events = await self.calendar.upcoming_events()
             if not events:
                 return ChatResponse(response="No upcoming calendar events found.")
             lines = ["Upcoming calendar events:"]

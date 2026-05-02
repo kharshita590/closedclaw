@@ -1,3 +1,5 @@
+"""Environment-backed security configuration for the agent runtime."""
+
 from __future__ import annotations
 
 import os
@@ -28,9 +30,6 @@ class SecuritySettings:
         self.max_action_payload_bytes = int(os.getenv("MAX_ACTION_PAYLOAD_BYTES", "20000"))
         self.action_rate_limit_per_hour = int(os.getenv("ACTION_RATE_LIMIT_PER_HOUR", "10"))
         self.pairing_code_ttl_seconds = int(os.getenv("PAIRING_CODE_TTL_SECONDS", "600"))
-        self.channel_policy_path = self._path(os.getenv("CHANNEL_POLICY_PATH", "channel_policy.yaml"))
-        self.approval_db_path = self._path(os.getenv("APPROVAL_DB_PATH", "memory/approval_ledger.db"))
-        self.pairing_db_path = self._path(os.getenv("PAIRING_DB_PATH", "memory/pairing_requests.db"))
 
     def _csv(self, name: str) -> set[str]:
         """Parses a comma-separated environment variable into a set."""

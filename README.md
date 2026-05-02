@@ -7,9 +7,9 @@ ClosedClaw is a local-first scaffold for a personal coding and productivity agen
 - Email: list and summarize Gmail messages, create drafts, send email, trash messages, and clear spam once Google OAuth is configured.
 - Calendar: list events, create/reschedule events, and find free slots through Google Calendar.
 - Browser automation: controlled Chromium sandbox with Playwright for navigation, form steps, extraction, and screenshots.
-- Memory/CRM: SQLite memory store plus JSON contact store.
+- Memory/CRM: PostgreSQL-backed memory and contact store.
 - Multi-channel: Streamlit UI plus Slack, Telegram, and WhatsApp bridge entry points.
-- Approvals: risky tasks create pending approvals instead of immediately sending, deleting, or booking.
+- Approvals: risky tasks create PostgreSQL-backed approvals and execute through Celery workers after approval.
 - Audit: channel messages and approval decisions are written to JSONL logs.
 - LLM routing: choose deterministic routing, bring your own OpenAI-compatible API key, or local Ollama.
 
@@ -124,29 +124,15 @@ The UI and bridges forward the key automatically when the same environment varia
 
 2. Per-channel allowlist and pairing
 
-Allowed Slack, Telegram, and WhatsApp senders live in:
+Allowed Slack, Telegram, and WhatsApp senders live in the PostgreSQL `channel_policy` table. Unknown senders are not forwarded to the agent. Instead, bridges create a six-digit pairing code in the PostgreSQL `pairing_requests` table.
 
-```text
-channel_policy.yaml
-```
-
-The file is JSON-formatted YAML so it can be read without extra Python dependencies. Unknown senders are not forwarded to the agent. Instead, bridges create a six-digit pairing code in:
-
-```text
-memory/pairing_requests.db
-```
-
-The sender must reply with the code before `PAIRING_CODE_TTL_SECONDS` expires.
+The sender must reply with the code before `PAIRING_CODE_TTL_SECONDS` expires. After five incorrect attempts, the pairing request is deleted and the sender must request a new code.
 
 3. Persistent approval ledger
 
-Sensitive action plans are stored in SQLite:
+Sensitive action plans are stored in PostgreSQL in the `approval_ledger` table.
 
-```text
-memory/approval_ledger.db
-```
-
-The `approval_ledger` table records action id, type, JSON payload, requester, timestamps, status, approver, and execution result. `/approvals` now reads from this ledger instead of process memory. Approving an action executes the stored typed action and writes the result back to the row.
+The `approval_ledger` table records action id, type, JSONB payload, requester, timestamps, status, approver, and execution result. `/approvals` reads from this ledger instead of process memory. Approving an action queues a Celery task; the worker executes the stored typed action and writes the result back to the row.
 
 4. Typed action plans
 
@@ -186,6 +172,10 @@ Autonomous actions receive only safe default scopes: email read, calendar read, 
 
 If a policy rejects an action, a rejected ledger row is written with the reason.
 
+7. Background execution and tracing
+
+Approved browser, email, and calendar actions are executed by Celery workers over Redis instead of inside the HTTP request. FastAPI tracing is instrumented with OpenTelemetry, and an OTLP endpoint can be configured for Jaeger or another collector.
+
 Useful policy settings:
 
 ```bash
@@ -196,3 +186,45 @@ MAX_ACTION_PAYLOAD_BYTES=20000
 ACTION_RATE_LIMIT_PER_HOUR=10
 PAIRING_CODE_TTL_SECONDS=600
 ```
+
+## Running in Production
+
+Use PostgreSQL for all durable state:
+
+```bash
+DATABASE_URL=postgresql://closedclaw:strong_password@postgres:5432/closedclaw
+```
+
+The Compose file includes a `postgres` service with a healthcheck. For a managed database, point `DATABASE_URL` to that database and remove the local `postgres` service.
+
+Use Redis and Celery for action execution:
+
+```bash
+CELERY_BROKER_URL=redis://redis:6379/0
+```
+
+Run at least one worker:
+
+```bash
+celery -A worker.celery_app worker --loglevel=info
+```
+
+Use Jaeger or another OTLP collector for tracing:
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
+```
+
+The local Compose file includes Jaeger at:
+
+```text
+http://localhost:16686
+```
+
+Before upgrading an existing SQLite deployment, run:
+
+```bash
+python scripts/migrate_sqlite_to_postgres.py
+```
+
+For production, set long random API keys, restrict `ALLOWED_EMAIL_DOMAINS`, keep bridge allowlists small, and expose only the UI or bridge endpoints you actually use.

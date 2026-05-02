@@ -1,3 +1,5 @@
+"""Typed action plan models for approval and policy enforcement."""
+
 from __future__ import annotations
 
 from datetime import datetime

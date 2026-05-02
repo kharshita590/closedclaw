@@ -1,21 +1,12 @@
 from __future__ import annotations
 
-import os
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "agent"))
-
 from actions.models import SendEmailAction
 from approvals.ledger import ApprovalLedger
-from security.config import get_security_settings
 
 
-def test_approval_ledger_persists_and_decides_action(tmp_path: Path) -> None:
+def test_approval_ledger_persists_and_decides_action(postgres_database: str) -> None:
     """Approval ledger persists pending actions and records final decisions."""
 
-    os.environ["APPROVAL_DB_PATH"] = str(tmp_path / "approvals.db")
-    get_security_settings.cache_clear()
     ledger = ApprovalLedger()
     action = SendEmailAction(recipient="person@example.com", subject="Hi", body="Hello")
 

@@ -1,135 +1,199 @@
+"""PostgreSQL-backed approval ledger for sensitive action execution.
+
+The ledger is the durable source of truth for approval requests, decisions, and
+execution results. It replaces the earlier in-memory and SQLite stores so worker
+processes and API processes can coordinate safely.
+"""
+
 from __future__ import annotations
 
 import json
-import sqlite3
-import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 from actions.models import AgentAction, action_from_payload
+from db.connection import connection_context
 from graph.state import PendingAction
-from security.config import get_security_settings
 
 
 class ApprovalLedger:
-    """Persistent SQLite approval ledger for every sensitive action plan."""
+    """Persistent PostgreSQL approval ledger for every sensitive action plan."""
 
-    def __init__(self, db_path: str | Path | None = None) -> None:
-        """Opens the ledger database and creates the schema if needed."""
+    def __init__(self, db_path: str | None = None) -> None:
+        """Initialize the ledger and create the PostgreSQL schema.
 
-        settings = get_security_settings()
-        self.db_path = Path(db_path) if db_path else settings.approval_db_path
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        Args:
+            db_path: Kept for backward compatibility with the previous SQLite
+                constructor. PostgreSQL now uses DATABASE_URL instead.
+        """
+
+        self.db_path = db_path
         self._init_db()
 
     def _init_db(self) -> None:
-        """Creates approval ledger tables and indexes."""
+        """Create the approval ledger table and indexes if they do not exist."""
 
-        with sqlite3.connect(self.db_path) as con:
-            con.execute(
-                """
-                CREATE TABLE IF NOT EXISTS approval_ledger (
-                    id TEXT PRIMARY KEY,
-                    action_type TEXT NOT NULL,
-                    action_payload TEXT NOT NULL,
-                    requested_by TEXT NOT NULL,
-                    requested_at TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    decided_at TEXT,
-                    decided_by TEXT,
-                    execution_result TEXT
+        with connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS approval_ledger (
+                        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        action_type TEXT NOT NULL,
+                        action_payload JSONB NOT NULL,
+                        requested_by TEXT NOT NULL,
+                        requested_at TIMESTAMPTZ NOT NULL,
+                        status TEXT NOT NULL,
+                        decided_at TIMESTAMPTZ,
+                        decided_by TEXT,
+                        execution_result JSONB NOT NULL DEFAULT '{}'::jsonb
+                    )
+                    """
                 )
-                """
-            )
-            con.execute("CREATE INDEX IF NOT EXISTS idx_approval_status ON approval_ledger(status)")
-            con.execute("CREATE INDEX IF NOT EXISTS idx_approval_action_time ON approval_ledger(action_type, decided_at)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_approval_status ON approval_ledger(status)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_approval_action_time ON approval_ledger(action_type, decided_at)")
 
     def create(self, action: AgentAction, requested_by: str, status: str = "pending", result: dict[str, Any] | None = None) -> PendingAction:
-        """Persists a new approval row and returns the API-facing pending action."""
+        """Persist a new approval row and return the API-facing action.
 
-        action_id = str(uuid.uuid4())
-        now = datetime.now(timezone.utc).isoformat()
-        with sqlite3.connect(self.db_path) as con:
-            con.execute(
-                """
-                INSERT INTO approval_ledger(
-                    id, action_type, action_payload, requested_by, requested_at,
-                    status, decided_at, decided_by, execution_result
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    action_id,
-                    action.action_type,
-                    json.dumps(action.model_dump(mode="json")),
-                    requested_by,
-                    now,
-                    status,
-                    now if status != "pending" else None,
-                    "policy" if status != "pending" else None,
-                    json.dumps(result or {}),
-                ),
-            )
+        Args:
+            action: Typed action plan to store.
+            requested_by: User or channel sender that requested the action.
+            status: Initial ledger status.
+            result: Optional policy rejection or execution metadata.
+
+        Returns:
+            A PendingAction model for API/UI display.
+        """
+
+        now = datetime.now(timezone.utc)
+        decided_at = now if status != "pending" else None
+        decided_by = "policy" if status != "pending" else None
+        with connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO approval_ledger(
+                        action_type, action_payload, requested_by, requested_at,
+                        status, decided_at, decided_by, execution_result
+                    )
+                    VALUES (%s, %s::jsonb, %s, %s, %s, %s, %s, %s::jsonb)
+                    RETURNING id
+                    """,
+                    (
+                        action.action_type,
+                        json.dumps(action.model_dump(mode="json")),
+                        requested_by,
+                        now,
+                        status,
+                        decided_at,
+                        decided_by,
+                        json.dumps(result or {}),
+                    ),
+                )
+                action_id = str(cur.fetchone()[0])
         return self._pending_from_action(action_id, action, requested_by, status)
 
     def list_pending(self) -> list[PendingAction]:
-        """Returns all pending approvals from durable storage."""
+        """Return all approvals that are still pending."""
 
-        with sqlite3.connect(self.db_path) as con:
-            con.row_factory = sqlite3.Row
-            rows = con.execute("SELECT * FROM approval_ledger WHERE status = 'pending' ORDER BY requested_at").fetchall()
-        return [self._pending_from_row(dict(row)) for row in rows]
+        with connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM approval_ledger WHERE status = 'pending' ORDER BY requested_at")
+                rows = cur.fetchall()
+                columns = [desc[0] for desc in cur.description]
+        return [self._pending_from_row(dict(zip(columns, row))) for row in rows]
 
     def get(self, action_id: str) -> dict[str, Any] | None:
-        """Loads one ledger row by id."""
+        """Load one approval ledger row by UUID.
 
-        with sqlite3.connect(self.db_path) as con:
-            con.row_factory = sqlite3.Row
-            row = con.execute("SELECT * FROM approval_ledger WHERE id = ?", (action_id,)).fetchone()
-        return dict(row) if row else None
+        Args:
+            action_id: Approval UUID.
+
+        Returns:
+            A dictionary row or None if the id is unknown.
+        """
+
+        with connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM approval_ledger WHERE id = %s", (action_id,))
+                row = cur.fetchone()
+                if not row:
+                    return None
+                columns = [desc[0] for desc in cur.description]
+        return dict(zip(columns, row))
 
     def get_action(self, action_id: str) -> AgentAction:
-        """Returns the typed action stored in a ledger row."""
+        """Return the typed action stored in a ledger row.
+
+        Args:
+            action_id: Approval UUID.
+
+        Returns:
+            The typed action model stored in action_payload.
+        """
 
         row = self.get(action_id)
         if not row:
             raise KeyError(action_id)
-        return action_from_payload(json.loads(row["action_payload"]))
+        payload = row["action_payload"]
+        return action_from_payload(payload if isinstance(payload, dict) else json.loads(payload))
 
     def decide(self, action_id: str, status: str, decided_by: str, result: dict[str, Any] | None = None) -> PendingAction:
-        """Marks an approval approved/rejected and stores any execution result."""
+        """Mark an approval approved/rejected and store execution result.
+
+        Args:
+            action_id: Approval UUID.
+            status: New status.
+            decided_by: Human or worker identity making the decision.
+            result: Optional execution or rejection details.
+
+        Returns:
+            The updated PendingAction view.
+        """
 
         row = self.get(action_id)
         if not row:
             raise KeyError(action_id)
-        now = datetime.now(timezone.utc).isoformat()
-        with sqlite3.connect(self.db_path) as con:
-            con.execute(
-                """
-                UPDATE approval_ledger
-                SET status = ?, decided_at = ?, decided_by = ?, execution_result = ?
-                WHERE id = ?
-                """,
-                (status, now, decided_by, json.dumps(result or {}), action_id),
-            )
+        now = datetime.now(timezone.utc)
+        with connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE approval_ledger
+                    SET status = %s, decided_at = %s, decided_by = %s, execution_result = %s::jsonb
+                    WHERE id = %s
+                    """,
+                    (status, now, decided_by, json.dumps(result or {}), action_id),
+                )
         updated = self.get(action_id)
         return self._pending_from_row(updated)
 
     def count_executed_since(self, action_type: str, since: datetime) -> int:
-        """Counts approved/executed actions of one type since a timestamp."""
+        """Count approved actions of one type since a timestamp.
 
-        with sqlite3.connect(self.db_path) as con:
-            row = con.execute(
-                """
-                SELECT COUNT(*) FROM approval_ledger
-                WHERE action_type = ? AND status = 'approved' AND decided_at >= ?
-                """,
-                (action_type, since.isoformat()),
-            ).fetchone()
-        return int(row[0])
+        Args:
+            action_type: Typed action name such as email.send.
+            since: Earliest decision timestamp to include.
+
+        Returns:
+            Number of approved actions in the interval.
+        """
+
+        with connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT COUNT(*) FROM approval_ledger
+                    WHERE action_type = %s AND status = 'approved' AND decided_at >= %s
+                    """,
+                    (action_type, since),
+                )
+                return int(cur.fetchone()[0])
 
     def _pending_from_action(self, action_id: str, action: AgentAction, user_id: str, status: str) -> PendingAction:
-        """Converts a typed action into the API response shape."""
+        """Convert a typed action into the API response shape."""
 
         return PendingAction(
             id=action_id,
@@ -142,7 +206,8 @@ class ApprovalLedger:
         )
 
     def _pending_from_row(self, row: dict[str, Any]) -> PendingAction:
-        """Converts a SQLite ledger row into the API response shape."""
+        """Convert a PostgreSQL ledger row into the API response shape."""
 
-        action = action_from_payload(json.loads(row["action_payload"]))
-        return self._pending_from_action(row["id"], action, row["requested_by"], row["status"])
+        payload = row["action_payload"]
+        action = action_from_payload(payload if isinstance(payload, dict) else json.loads(payload))
+        return self._pending_from_action(str(row["id"]), action, row["requested_by"], row["status"])

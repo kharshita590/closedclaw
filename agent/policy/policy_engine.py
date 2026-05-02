@@ -1,3 +1,5 @@
+"""Policy engine for validating typed actions before execution."""
+
 from __future__ import annotations
 
 import json

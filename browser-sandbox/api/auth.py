@@ -1,3 +1,5 @@
+"""API key authentication for the browser sandbox service."""
+
 from __future__ import annotations
 
 import os

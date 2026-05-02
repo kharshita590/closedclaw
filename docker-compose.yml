@@ -1,5 +1,39 @@
 services:
 
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: closedclaw
+      POSTGRES_PASSWORD: closedclaw
+      POSTGRES_DB: closedclaw
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U closedclaw"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: unless-stopped
+    networks:
+      - internal
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.56
+    container_name: jaeger
+    restart: unless-stopped
+    ports:
+      - "16686:16686"
+    networks:
+      - internal
+
   agent:
     build: ./agent
     container_name: agent
@@ -18,7 +52,36 @@ services:
     networks:
       - internal
     depends_on:
-      - browser-sandbox
+      browser-sandbox:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  worker:
+    build: ./agent
+    container_name: worker
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PROJECT_ROOT: /app
+      SECRETS_DIR: secrets
+      GOOGLE_CLIENT_SECRET_FILE: /app/secrets/google_client_secret.json
+    command: celery -A worker.celery_app worker --loglevel=info
+    volumes:
+      - ./memory:/app/memory
+      - ./secrets:/app/secrets:ro
+      - ./logs:/app/logs
+    networks:
+      - internal
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      browser-sandbox:
+        condition: service_started
 
   browser-sandbox:
     build: ./browser-sandbox
@@ -65,14 +128,14 @@ services:
 
   # slack-bridge:
   #   build:
-  #     context: ./bridges
-  #     dockerfile: slack/Dockerfile
+  #     context: .
+  #     dockerfile: bridges/slack/Dockerfile
   #   container_name: slack-bridge
   #   restart: unless-stopped
   #   env_file: .env
-  #   volumes:
-  #     - ./channel_policy.yaml:/app/channel_policy.yaml
-  #     - ./memory:/app/memory
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
   #   ports:
   #     - "8081:8080"
   #   networks:
@@ -80,14 +143,14 @@ services:
 
   # telegram-bridge:
   #   build:
-  #     context: ./bridges
-  #     dockerfile: telegram/Dockerfile
+  #     context: .
+  #     dockerfile: bridges/telegram/Dockerfile
   #   container_name: telegram-bridge
   #   restart: unless-stopped
   #   env_file: .env
-  #   volumes:
-  #     - ./channel_policy.yaml:/app/channel_policy.yaml
-  #     - ./memory:/app/memory
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
   #   ports:
   #     - "8082:8080"
   #   networks:
@@ -100,8 +163,9 @@ services:
   #   env_file: .env
   #   volumes:
   #     - whatsapp_session:/app/.wwebjs_auth
-  #     - ./channel_policy.yaml:/app/channel_policy.yaml
-  #     - ./memory:/app/memory
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
   #   networks:
   #     - internal
 
@@ -111,3 +175,4 @@ networks:
 
 volumes:
   whatsapp_session:
+  postgres_data:

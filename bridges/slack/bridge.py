@@ -12,13 +12,11 @@ from channel_policy import ChannelPolicy, PairingStore  # noqa: E402
 
 AGENT_URL = os.getenv("AGENT_URL", "http://agent:8000").rstrip("/")
 AGENT_API_KEY = os.getenv("AGENT_API_KEY") or os.getenv("AGENT_API_KEYS", "").split(",")[0].strip()
-POLICY_PATH = os.getenv("CHANNEL_POLICY_PATH", "channel_policy.yaml")
-PAIRING_DB_PATH = os.getenv("PAIRING_DB_PATH", "memory/pairing_requests.db")
 PAIRING_TTL = int(os.getenv("PAIRING_CODE_TTL_SECONDS", "600"))
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN", "")
 app = FastAPI(title="ClosedClaw Slack Bridge")
-policy = ChannelPolicy(POLICY_PATH)
-pairing = PairingStore(PAIRING_DB_PATH, PAIRING_TTL)
+policy = ChannelPolicy()
+pairing = PairingStore(ttl_seconds=PAIRING_TTL)
 
 
 @app.get("/health")

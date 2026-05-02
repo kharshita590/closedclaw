@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -11,15 +12,29 @@ from permissions.registry import require_scope
 
 
 class CalendarTools:
+    """Google Calendar wrapper with async public methods backed by a thread pool."""
+
     def __init__(self) -> None:
+        """Initialize the Calendar service if OAuth credentials are available."""
+
         creds = load_credentials("calendar_token", CALENDAR_SCOPES)
         self.service = build("calendar", "v3", credentials=creds) if creds else None
 
     def available(self) -> bool:
+        """Return whether Google Calendar credentials were loaded."""
+
         return self.service is not None
 
     @require_scope("calendar:read")
-    def upcoming_events(self, days: int = 7, limit: int = 20) -> list[dict[str, Any]]:
+    async def upcoming_events(self, days: int = 7, limit: int = 20) -> list[dict[str, Any]]:
+        """List upcoming events without blocking the event loop."""
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, lambda: self._upcoming_events_sync(days, limit))
+
+    def _upcoming_events_sync(self, days: int = 7, limit: int = 20) -> list[dict[str, Any]]:
+        """Synchronously list upcoming events inside a worker thread."""
+
         self._require()
         now = datetime.now(timezone.utc)
         end = now + timedelta(days=days)
@@ -38,7 +53,7 @@ class CalendarTools:
         return result.get("items", [])
 
     @require_scope("calendar:write")
-    def create_event(
+    async def create_event(
         self,
         summary: str,
         start: str,
@@ -47,6 +62,25 @@ class CalendarTools:
         description: str | None = None,
         timezone_name: str = "Asia/Kolkata",
     ) -> dict[str, Any]:
+        """Create a calendar event without blocking the event loop."""
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self._create_event_sync(summary, start, end, attendees, description, timezone_name),
+        )
+
+    def _create_event_sync(
+        self,
+        summary: str,
+        start: str,
+        end: str,
+        attendees: list[str] | None = None,
+        description: str | None = None,
+        timezone_name: str = "Asia/Kolkata",
+    ) -> dict[str, Any]:
+        """Synchronously create a calendar event inside a worker thread."""
+
         self._require()
         event = {
             "summary": summary,
@@ -58,7 +92,15 @@ class CalendarTools:
         return self.service.events().insert(calendarId="primary", body=event, sendUpdates="all").execute()
 
     @require_scope("calendar:write")
-    def reschedule_event(self, event_id: str, start: str, end: str, timezone_name: str = "Asia/Kolkata") -> dict[str, Any]:
+    async def reschedule_event(self, event_id: str, start: str, end: str, timezone_name: str = "Asia/Kolkata") -> dict[str, Any]:
+        """Reschedule a calendar event without blocking the event loop."""
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, lambda: self._reschedule_event_sync(event_id, start, end, timezone_name))
+
+    def _reschedule_event_sync(self, event_id: str, start: str, end: str, timezone_name: str = "Asia/Kolkata") -> dict[str, Any]:
+        """Synchronously reschedule a calendar event inside a worker thread."""
+
         self._require()
         event = self.service.events().get(calendarId="primary", eventId=event_id).execute()
         event["start"] = {"dateTime": start, "timeZone": timezone_name}
@@ -66,13 +108,27 @@ class CalendarTools:
         return self.service.events().update(calendarId="primary", eventId=event_id, body=event, sendUpdates="all").execute()
 
     @require_scope("calendar:read")
-    def find_free_slots(
+    async def find_free_slots(
         self,
         start: str,
         end: str,
         duration_minutes: int = 30,
         calendars: list[str] | None = None,
     ) -> list[dict[str, str]]:
+        """Find calendar free slots without blocking the event loop."""
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, lambda: self._find_free_slots_sync(start, end, duration_minutes, calendars))
+
+    def _find_free_slots_sync(
+        self,
+        start: str,
+        end: str,
+        duration_minutes: int = 30,
+        calendars: list[str] | None = None,
+    ) -> list[dict[str, str]]:
+        """Synchronously find free slots inside a worker thread."""
+
         self._require()
         calendars = calendars or ["primary"]
         body = {"timeMin": start, "timeMax": end, "items": [{"id": cal} for cal in calendars]}
@@ -94,5 +150,7 @@ class CalendarTools:
         return slots
 
     def _require(self) -> None:
+        """Raise if Google Calendar has not been connected."""
+
         if not self.service:
             raise RuntimeError("Google Calendar is not connected. Run OAuth setup and store calendar_token first.")

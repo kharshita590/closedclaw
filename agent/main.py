@@ -1,3 +1,5 @@
+"""FastAPI entry point for the ClosedClaw personal agent API."""
+
 from __future__ import annotations
 
 from typing import Literal
@@ -6,25 +8,57 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from actions.executor import ActionExecutor
 from approvals.ledger import ApprovalLedger
 from audit.logger import AuditLogger
 from graph.agent_graph import PersonalAgentGraph
 from graph.state import ChatRequest, ChatResponse, PendingAction
-from policy.policy_engine import PolicyEngine
 from security.auth import is_valid_api_key, require_auth
+from worker.tasks import execute_action_task
+
+try:
+    from opentelemetry import trace
+    from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+    from opentelemetry.sdk.resources import Resource
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor
+except ImportError:
+    trace = None
+    OTLPSpanExporter = None
+    FastAPIInstrumentor = None
+    Resource = None
+    TracerProvider = None
+    BatchSpanProcessor = None
 
 app = FastAPI(title="ClosedClaw Personal Agent")
 agent = PersonalAgentGraph()
 audit = AuditLogger()
 approval_ledger = ApprovalLedger()
-policy_engine = PolicyEngine(approval_ledger)
-action_executor = ActionExecutor(policy_engine)
 
 
 class ApprovalRequest(BaseModel):
+    """Request body for approval decisions."""
+
     decision: Literal["approved", "rejected"]
     decided_by: str = "api"
+
+
+def _configure_tracing(fastapi_app: FastAPI) -> None:
+    """Configure OpenTelemetry FastAPI tracing when dependencies are installed."""
+
+    if not FastAPIInstrumentor:
+        return
+    import os
+
+    endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+    if endpoint and TracerProvider and Resource and BatchSpanProcessor and OTLPSpanExporter:
+        provider = TracerProvider(resource=Resource.create({"service.name": "closedclaw-agent"}))
+        provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint)))
+        trace.set_tracer_provider(provider)
+    FastAPIInstrumentor.instrument_app(fastapi_app)
+
+
+_configure_tracing(app)
 
 
 @app.middleware("http")
@@ -75,15 +109,16 @@ async def decide_approval(action_id: str, request: ApprovalRequest) -> PendingAc
         audit.event("approval_decided", action_id=action.id, decision="rejected", action_type=action.action_type)
         return action
 
-    action_plan = approval_ledger.get_action(action_id)
-    execution = await action_executor.execute_approved(action_plan)
-    final_status = "approved" if execution.get("ok") else "rejected"
-    action = approval_ledger.decide(action_id, final_status, request.decided_by, execution)
-    audit.event(
-        "approval_decided",
-        action_id=action.id,
-        decision=final_status,
+    execute_action_task.delay(action_id)
+    action = approval_ledger.get_action(action_id)
+    pending = PendingAction(
+        id=action_id,
         action_type=action.action_type,
-        execution=execution,
+        summary=action.to_human_readable(),
+        payload=action.model_dump(mode="json"),
+        channel="ledger",
+        user_id=row["requested_by"],
+        status="pending",
     )
-    return action
+    audit.event("approval_queued", action_id=pending.id, action_type=pending.action_type, decided_by=request.decided_by)
+    return pending

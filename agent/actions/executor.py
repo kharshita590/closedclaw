@@ -1,3 +1,5 @@
+"""Execution dispatcher for approved typed actions."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -62,14 +64,14 @@ class ActionExecutor:
         """Dispatches one validated action to its concrete tool implementation."""
 
         if isinstance(action, SendEmailAction):
-            return self.email.send_email(str(action.recipient), action.subject, action.body, action.thread_id)
+            return await self.email.send_email(str(action.recipient), action.subject, action.body, action.thread_id)
         if isinstance(action, DeleteEmailAction):
-            self.email.delete_message(action.message_id)
+            await self.email.delete_message(action.message_id)
             return {"deleted": action.message_id}
         if isinstance(action, ClearSpamAction):
-            return {"deleted_count": self.email.clear_spam(action.limit)}
+            return {"deleted_count": await self.email.clear_spam(action.limit)}
         if isinstance(action, CreateCalendarEventAction):
-            return self.calendar.create_event(
+            return await self.calendar.create_event(
                 action.summary,
                 action.start.isoformat(),
                 action.end.isoformat(),

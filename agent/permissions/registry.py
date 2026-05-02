@@ -1,3 +1,5 @@
+"""Runtime tool-scope registry and decorators."""
+
 from __future__ import annotations
 
 import inspect
