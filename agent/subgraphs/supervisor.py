@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from actions.models import BrowserNavigateAction, ClearSpamAction, DeleteEmailAction, SendEmailAction
+from actions.models import BrowserFormSubmitAction, BrowserNavigateAction, ClearSpamAction, DeleteEmailAction, SendEmailAction
 from approvals.ledger import ApprovalLedger
 from audit.logger import AuditLogger
 from graph.state import ChatRequest, ChatResponse
@@ -282,6 +282,8 @@ User message: {text}
         if decision.domain == "calendar":
             return await self._calendar_response(request)
         if decision.domain == "browser":
+            if self._is_form_fill_request(text):
+                return await self._browser_form_response(request, decision.start_url or self._first_url(text))
             try:
                 action = BrowserNavigateAction(goal=text, url=decision.start_url or self._first_url(text))
                 policy = self.policy.check(action)
@@ -383,6 +385,42 @@ User message: {text}
         except Exception as exc:
             return ChatResponse(response=f"Calendar is not ready: {exc}")
 
+    async def _browser_form_response(self, request: ChatRequest, url: str | None) -> ChatResponse:
+        """Ask for form values or create an approval to fill and submit a form.
+
+        Args:
+            request: User request containing the form URL or field values.
+            url: Form URL extracted by the router or URL parser.
+
+        Returns:
+            ChatResponse asking for missing values, or a pending approval action.
+
+        Browser form submission is modeled as a typed action so it is never
+        submitted directly by the LLM or browser summary path.
+        """
+
+        if not url:
+            return ChatResponse(response="Send the form URL and the values you want filled.")
+        fields = self._extract_form_values(request.message)
+        required = self._default_form_fields()
+        missing = [field for field in required if field not in fields]
+        if missing:
+            lines = [
+                "I can fill the form, but I need these values first:",
+                *[f"- {field}" for field in missing],
+                "",
+                "Send them as `Field: value`. I will create an approval before submitting.",
+            ]
+            return ChatResponse(response="\n".join(lines), data={"form_url": url, "missing_fields": missing, "known_fields": fields})
+
+        action_plan = BrowserFormSubmitAction(url=url, fields={field: fields[field] for field in required}, submit=True)
+        policy = self.policy.check(action_plan)
+        if not policy.allowed:
+            self.approvals.create(action_plan, request.user_id, status="rejected", result={"reason": policy.reason})
+            return ChatResponse(response=f"Form submission rejected by policy: {policy.reason}")
+        action = self.approvals.create(action_plan, request.user_id)
+        return ChatResponse(response="I prepared a form submission action for approval. It will only submit after approval.", actions=[action])
+
     async def _extract_email_params(self, message: str, context: dict[str, Any] | None = None) -> SendEmailAction:
         """Extract and validate email parameters from text plus step context.
 
@@ -476,6 +514,65 @@ User message: {message}
     def _first_url(self, text: str) -> str | None:
         match = re.search(r"https?://\S+", text)
         return match.group(0) if match else None
+
+    def _is_form_fill_request(self, text: str) -> bool:
+        """Return True when the browser request is asking to fill a web form."""
+
+        lowered = text.lower()
+        return "form" in lowered and any(word in lowered for word in ["fill", "submit", "google form", "forms.gle"])
+
+    def _default_form_fields(self) -> list[str]:
+        """Return the common required fields for the current internship consent form."""
+
+        return [
+            "University Roll no.",
+            "Name",
+            "Branch",
+            "KIET E-Mail Id",
+            "Contact no.",
+            "Year of Passing",
+            "Gender",
+            "Residential Area",
+            "Source for Internship",
+        ]
+
+    def _extract_form_values(self, text: str) -> dict[str, str]:
+        """Extract `Field: value` pairs and aliases from a user form-fill message."""
+
+        aliases = {
+            "roll no": "University Roll no.",
+            "roll number": "University Roll no.",
+            "university roll no": "University Roll no.",
+            "university roll no.": "University Roll no.",
+            "name": "Name",
+            "branch": "Branch",
+            "kiet email": "KIET E-Mail Id",
+            "kiet e-mail id": "KIET E-Mail Id",
+            "email": "KIET E-Mail Id",
+            "contact": "Contact no.",
+            "contact no": "Contact no.",
+            "phone": "Contact no.",
+            "year of passing": "Year of Passing",
+            "passing year": "Year of Passing",
+            "gender": "Gender",
+            "residential area": "Residential Area",
+            "residential": "Residential Area",
+            "source for internship": "Source for Internship",
+            "source": "Source for Internship",
+        }
+        fields: dict[str, str] = {}
+        for line in text.splitlines():
+            if ":" not in line:
+                continue
+            raw_key, raw_value = line.split(":", 1)
+            key = re.sub(r"\s+", " ", raw_key.strip().lower())
+            value = raw_value.strip()
+            if not value:
+                continue
+            canonical = aliases.get(key)
+            if canonical:
+                fields[canonical] = value
+        return fields
 
     def _looks_sequential(self, text: str) -> bool:
         """Return whether text contains conjunctions that imply ordered actions."""

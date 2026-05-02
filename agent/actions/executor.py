@@ -6,6 +6,7 @@ from typing import Any
 
 from actions.models import (
     AgentAction,
+    BrowserFormSubmitAction,
     BrowserNavigateAction,
     ClearSpamAction,
     CreateCalendarEventAction,
@@ -24,6 +25,7 @@ ACTION_SCOPES = {
     "email.clear_spam": {"email:delete"},
     "calendar.create_event": {"calendar:write"},
     "browser.navigate": {"browser:navigate"},
+    "browser.form_submit": {"browser:navigate"},
 }
 
 
@@ -81,4 +83,6 @@ class ActionExecutor:
             )
         if isinstance(action, BrowserNavigateAction):
             return await self.browser.run(goal=action.goal, start_url=action.url)
+        if isinstance(action, BrowserFormSubmitAction):
+            return await self.browser.submit_form(action.url, action.fields, action.submit)
         raise ValueError(f"No executor registered for {action.action_type}")

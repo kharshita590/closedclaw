@@ -6,7 +6,7 @@ from typing import Any
 from markdownify import markdownify as md
 from playwright.async_api import async_playwright
 
-from api.schemas import BrowserRunRequest, BrowserRunResponse
+from api.schemas import BrowserFormSubmitRequest, BrowserRunRequest, BrowserRunResponse
 from browser.screenshot_utils import screenshot_path
 
 
@@ -53,6 +53,61 @@ class PlaywrightRunner:
                 )
             finally:
                 await browser.close()
+
+    async def submit_form(self, request: BrowserFormSubmitRequest) -> BrowserRunResponse:
+        """Fill matching form controls and submit the form after approval."""
+
+        observations: list[dict[str, Any]] = []
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=True, args=["--disable-dev-shm-usage", "--no-sandbox"])
+            page = await browser.new_page(viewport={"width": 1365, "height": 900})
+            try:
+                await page.goto(request.url, wait_until="domcontentloaded", timeout=30000)
+                await page.wait_for_timeout(2000)
+                observations.append({"action": "goto", "url": request.url})
+                for label, value in request.fields.items():
+                    filled = await self._fill_google_form_field(page, label, value)
+                    observations.append({"action": "fill", "label": label, "value": value, "filled": filled})
+                if request.submit:
+                    await page.get_by_role("button", name=re.compile(r"submit", re.I)).click(timeout=10000)
+                    await page.wait_for_timeout(2000)
+                    observations.append({"action": "submit"})
+                html = await page.content()
+                text = md(html)
+                shot = screenshot_path()
+                await page.screenshot(path=str(shot), full_page=True)
+                return BrowserRunResponse(
+                    summary=self._summarize("submit form", await page.title(), text),
+                    url=page.url,
+                    title=await page.title(),
+                    text=text[:12000],
+                    screenshot=str(shot),
+                    observations=observations,
+                )
+            finally:
+                await browser.close()
+
+    async def _fill_google_form_field(self, page: Any, label: str, value: str) -> bool:
+        """Best-effort fill for Google Forms text inputs and radio/list options."""
+
+        label_text = re.escape(label).replace(r"\ ", r"\s+")
+        question = page.locator("div[role='listitem']").filter(has_text=re.compile(label_text, re.I)).first
+        if await question.count() == 0:
+            question = page.locator("body")
+        textbox = question.locator("input[type='text'], input[type='email'], input[type='tel'], textarea").first
+        if await textbox.count() > 0:
+            await textbox.fill(value, timeout=5000)
+            return True
+        option = question.get_by_text(re.compile(rf"^{re.escape(value)}$", re.I)).first
+        if await option.count() > 0:
+            await option.click(timeout=5000)
+            return True
+        combobox = question.locator("div[role='listbox']").first
+        if await combobox.count() > 0:
+            await combobox.click(timeout=5000)
+            await page.get_by_text(re.compile(rf"^{re.escape(value)}$", re.I)).click(timeout=5000)
+            return True
+        return False
 
     def _url_from_goal(self, goal: str) -> str | None:
         match = re.search(r"https?://\S+", goal)

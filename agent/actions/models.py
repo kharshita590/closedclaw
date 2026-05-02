@@ -120,8 +120,30 @@ class BrowserNavigateAction(AgentAction):
         return f"Use browser for: {self.goal}"
 
 
+class BrowserFormSubmitAction(AgentAction):
+    """Represents a browser form fill-and-submit action after approval."""
+
+    action_type: Literal["browser.form_submit"] = "browser.form_submit"
+    url: str = Field(min_length=1, max_length=2000)
+    fields: dict[str, str] = Field(default_factory=dict, max_length=50)
+    submit: bool = True
+
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, url: str) -> str:
+        """Rejects form URLs that are not absolute HTTP(S) URLs."""
+
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("url must be an http(s) URL")
+        return url
+
+    def to_human_readable(self) -> str:
+        return f"Fill and submit form at {self.url} with {len(self.fields)} fields."
+
+
 ActionUnion = Annotated[
-    Union[SendEmailAction, DeleteEmailAction, ClearSpamAction, CreateCalendarEventAction, BrowserNavigateAction],
+    Union[SendEmailAction, DeleteEmailAction, ClearSpamAction, CreateCalendarEventAction, BrowserNavigateAction, BrowserFormSubmitAction],
     Field(discriminator="action_type"),
 ]
 
@@ -136,6 +158,7 @@ def action_from_payload(payload: dict[str, Any]) -> ActionUnion:
         "email.clear_spam": ClearSpamAction,
         "calendar.create_event": CreateCalendarEventAction,
         "browser.navigate": BrowserNavigateAction,
+        "browser.form_submit": BrowserFormSubmitAction,
     }
     model = model_by_type.get(action_type)
     if not model:

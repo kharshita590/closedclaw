@@ -26,3 +26,9 @@ class BrowserRunResponse(BaseModel):
     text: str = ""
     screenshot: str | None = None
     observations: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class BrowserFormSubmitRequest(BaseModel):
+    url: str
+    fields: dict[str, str] = Field(default_factory=dict)
+    submit: bool = True

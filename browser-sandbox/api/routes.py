@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 
 from api.auth import require_auth
-from api.schemas import BrowserRunRequest, BrowserRunResponse
+from api.schemas import BrowserFormSubmitRequest, BrowserRunRequest, BrowserRunResponse
 from browser.playwright_runner import PlaywrightRunner
 
 router = APIRouter()
@@ -20,3 +20,8 @@ def health() -> dict[str, str]:
 @router.post("/run", response_model=BrowserRunResponse, dependencies=[Depends(require_auth)])
 async def run_browser(request: BrowserRunRequest) -> BrowserRunResponse:
     return await runner.run(request)
+
+
+@router.post("/submit-form", response_model=BrowserRunResponse, dependencies=[Depends(require_auth)])
+async def submit_form(request: BrowserFormSubmitRequest) -> BrowserRunResponse:
+    return await runner.submit_form(request)

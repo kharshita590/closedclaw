@@ -252,3 +252,39 @@ def test_llm_extraction_replaces_regex() -> None:
     assert action.recipient == "sarah@company.com"
     assert action.subject
     assert "deadline is Friday" in action.body
+
+
+def test_form_fill_request_asks_for_missing_values() -> None:
+    agent = supervisor()
+
+    response = asyncio.run(
+        agent._browser_form_response(
+            ChatRequest(message="https://forms.gle/example fill this google form"),
+            "https://forms.gle/example",
+        )
+    )
+
+    assert "I can fill the form, but I need these values first:" in response.response
+    assert "University Roll no." in response.data["missing_fields"]
+    assert not response.actions
+
+
+def test_form_fill_request_creates_approval_when_values_are_present() -> None:
+    agent = supervisor()
+    message = """https://forms.gle/example fill this google form
+Roll no: 123
+Name: Test User
+Branch: CSE-AI
+KIET email: test@kiet.edu
+Contact no: 9999999999
+Year of passing: 2028
+Gender: Male
+Residential area: Hostler
+Source for internship: Byself"""
+
+    response = asyncio.run(agent._browser_form_response(ChatRequest(message=message), "https://forms.gle/example"))
+
+    assert response.actions
+    assert response.actions[0].action_type == "browser.form_submit"
+    assert response.actions[0].payload["fields"]["Branch"] == "CSE-AI"
+    assert response.actions[0].payload["submit"] is True

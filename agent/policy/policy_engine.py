@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Protocol
 from urllib.parse import urlparse
 
-from actions.models import AgentAction, BrowserNavigateAction, SendEmailAction
+from actions.models import AgentAction, BrowserFormSubmitAction, BrowserNavigateAction, SendEmailAction
 from security.config import get_security_settings
 
 
@@ -48,9 +48,15 @@ class PolicyEngine:
     def _url_policy(self, action: AgentAction) -> PolicyResult:
         """Rejects browser actions targeting blocked domains."""
 
-        if not isinstance(action, BrowserNavigateAction) or not action.url:
+        if isinstance(action, BrowserFormSubmitAction):
+            url = action.url
+        elif isinstance(action, BrowserNavigateAction):
+            url = action.url
+        else:
+            url = None
+        if not url:
             return PolicyResult(True, "not a browser URL action")
-        domain = urlparse(action.url).netloc.lower().split(":")[0]
+        domain = urlparse(url).netloc.lower().split(":")[0]
         if any(domain == blocked or domain.endswith(f".{blocked}") for blocked in self.settings.blocked_url_domains):
             return PolicyResult(False, f"Blocked URL domain: {domain}")
         return PolicyResult(True, "URL allowed")

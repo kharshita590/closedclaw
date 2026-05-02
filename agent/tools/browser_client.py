@@ -24,6 +24,19 @@ class BrowserClient:
             response.raise_for_status()
             return response.json()
 
+    @require_scope("browser:navigate")
+    async def submit_form(self, url: str, fields: dict[str, str], submit: bool = True) -> dict[str, Any]:
+        """Fill a browser form and optionally submit it through the sandbox."""
+
+        async with httpx.AsyncClient(timeout=120) as client:
+            response = await client.post(
+                f"{self.base_url}/submit-form",
+                headers=self._headers(),
+                json={"url": url, "fields": fields, "submit": submit},
+            )
+            response.raise_for_status()
+            return response.json()
+
     def _headers(self) -> dict[str, str]:
         """Builds auth headers for calls into the browser sandbox."""
 
