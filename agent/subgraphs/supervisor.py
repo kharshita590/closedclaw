@@ -6,8 +6,9 @@ from actions.models import BrowserNavigateAction, ClearSpamAction, DeleteEmailAc
 from approvals.ledger import ApprovalLedger
 from audit.logger import AuditLogger
 from graph.state import ChatRequest, ChatResponse, PendingAction
-from llm.client import LLMClient, LLMDecision
+from llm.client import LLMClient
 from policy.policy_engine import PolicyEngine
+from subgraphs.intent_router import HierarchicalIntentRouter, RouteDecision
 from subgraphs.email_agent import EmailAgent
 from subgraphs.research_agent import ResearchAgent
 from tools.calendar_tools import CalendarTools
@@ -22,6 +23,7 @@ class SupervisorAgent:
         self.calendar = CalendarTools()
         self.research_agent = ResearchAgent()
         self.llm = LLMClient()
+        self.router = HierarchicalIntentRouter(self.llm)
         self.approvals = ApprovalLedger()
         self.policy = PolicyEngine(self.approvals)
 
@@ -30,48 +32,39 @@ class SupervisorAgent:
         self.audit.event("message_received", channel=request.channel, user_id=request.user_id, message=text)
         self.memory.remember(request.channel, request.user_id, "conversation", text, request.metadata)
 
-        decision = await self._decide(request)
+        decision = await self.router.route(
+            request.message,
+            {"channel": request.channel, "user_id": request.user_id, "metadata": request.metadata},
+        )
         self.audit.decision(
             provider=self.llm.provider,
+            domain=decision.domain,
             intent=decision.intent,
             confidence=decision.confidence,
             user_id=request.user_id,
             channel=request.channel,
         )
-        return await self._execute_decision(request, decision)
+        return await self._execute_route(request, decision)
 
-    async def _decide(self, request: ChatRequest) -> LLMDecision:
-        if self.llm.enabled():
-            try:
-                decision = await self.llm.decide(
-                    request.message,
-                    {"channel": request.channel, "user_id": request.user_id, "metadata": request.metadata},
-                )
-                if decision.confidence >= 0.45 or decision.intent != "general":
-                    return decision
-            except Exception as exc:
-                self.audit.event("llm_router_failed", provider=self.llm.provider, error=str(exc))
-        return self._rule_decision(request.message)
-
-    async def _execute_decision(self, request: ChatRequest, decision: LLMDecision) -> ChatResponse:
+    async def _execute_route(self, request: ChatRequest, decision: RouteDecision) -> ChatResponse:
         text = request.message.strip()
-        if decision.intent == "draft_email":
+        if decision.domain == "email" and decision.intent == "draft_email":
             return self._send_email_action(request)
-        if decision.intent == "destructive_email":
+        if decision.domain == "email" and decision.intent == "destructive_email":
             return self._destructive_email_action(request)
-        if decision.intent == "latest_email":
+        if decision.domain == "email" and decision.intent == "latest_email":
             try:
                 return ChatResponse(response=await self.email.latest_email())
             except Exception as exc:
                 return ChatResponse(response=f"Email is not ready: {exc}")
-        if decision.intent == "summarize_email":
+        if decision.domain == "email" and decision.intent == "summarize_email":
             try:
                 return ChatResponse(response=await self.email.summarize_inbox())
             except Exception as exc:
                 return ChatResponse(response=f"Email is not ready: {exc}")
-        if decision.intent == "calendar":
+        if decision.domain == "calendar":
             return await self._calendar_response(request)
-        if decision.intent == "browser":
+        if decision.domain == "browser":
             try:
                 action = BrowserNavigateAction(goal=text, url=decision.start_url or self._first_url(text))
                 policy = self.policy.check(action)
@@ -82,11 +75,11 @@ class SupervisorAgent:
                 return ChatResponse(response=result.get("summary", "Browser task completed."), data={"browser": result})
             except Exception as exc:
                 return ChatResponse(response=f"Browser automation failed: {exc}")
-        if decision.intent == "remember":
+        if decision.domain == "memory" and decision.intent == "remember":
             content = decision.query or re.sub(r"^remember\s+", "", text, flags=re.IGNORECASE).strip()
             memory_id = self.memory.remember(request.channel, request.user_id, "note", content)
             return ChatResponse(response=f"Saved memory #{memory_id}.")
-        if decision.intent == "search_memory":
+        if decision.domain == "memory" and decision.intent == "search_memory":
             query = decision.query or re.sub(r"^search memory\s+", "", text, flags=re.IGNORECASE).strip()
             hits = self.memory.search(request.user_id, query)
             if not hits:
@@ -106,26 +99,6 @@ class SupervisorAgent:
                 "For risky actions like sending mail, deleting mail, or booking purchases, I will create an approval first."
             )
         )
-
-    def _rule_decision(self, text: str) -> LLMDecision:
-        lowered = text.lower()
-        if any(word in lowered for word in ["send email", "reply to", "draft email"]):
-            return LLMDecision(intent="draft_email", confidence=0.8)
-        if "delete email" in lowered or "clear spam" in lowered:
-            return LLMDecision(intent="destructive_email", confidence=0.8)
-        if any(word in lowered for word in ["latest email", "last email", "recent email", "newest email"]):
-            return LLMDecision(intent="latest_email", confidence=0.8)
-        if any(word in lowered for word in ["summarize email", "summarise email", "inbox", "email", "emails", "mail"]):
-            return LLMDecision(intent="summarize_email", confidence=0.7)
-        if any(word in lowered for word in ["calendar", "meeting", "schedule", "free slot", "reschedule"]):
-            return LLMDecision(intent="calendar", confidence=0.7)
-        if any(word in lowered for word in ["browse", "website", "compare", "price", "research", "scrape", "flight", "book"]):
-            return LLMDecision(intent="browser", confidence=0.7, start_url=self._first_url(text))
-        if lowered.startswith("remember "):
-            return LLMDecision(intent="remember", confidence=0.8, query=text.removeprefix("remember ").strip())
-        if lowered.startswith("search memory "):
-            return LLMDecision(intent="search_memory", confidence=0.8, query=text.removeprefix("search memory ").strip())
-        return LLMDecision(intent="general", confidence=0.0)
 
     def _send_email_action(self, request: ChatRequest) -> ChatResponse:
         try:
@@ -180,8 +153,8 @@ class SupervisorAgent:
         recipient_match = re.search(r"\bto\s+([^\s,;]+@[^\s,;]+)", text, flags=re.IGNORECASE)
         if not recipient_match:
             raise ValueError("include a recipient like 'to name@example.com'")
-        subject_match = re.search(r"\bsubject\s+(.+?)(?:\s+body\s+|\s+message\s+|$)", text, flags=re.IGNORECASE)
-        body_match = re.search(r"\b(?:body|message)\s+(.+)$", text, flags=re.IGNORECASE)
+        subject_match = re.search(r"\bsubject\s*:?\s+(.+?)(?:\s+(?:body|message)\s*:?\s+|$)", text, flags=re.IGNORECASE)
+        body_match = re.search(r"\b(?:body|message)\s*:?\s+(.+)$", text, flags=re.IGNORECASE)
         subject = subject_match.group(1).strip(" :\"'") if subject_match else "No subject"
         body = body_match.group(1).strip(" :\"'") if body_match else ""
         if not body:

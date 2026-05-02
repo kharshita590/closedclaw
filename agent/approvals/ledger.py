@@ -105,6 +105,16 @@ class ApprovalLedger:
                 columns = [desc[0] for desc in cur.description]
         return [self._pending_from_row(dict(zip(columns, row))) for row in rows]
 
+    def list_queued(self) -> list[PendingAction]:
+        """Return approvals that have been queued but not yet completed."""
+
+        with connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM approval_ledger WHERE status = 'queued' ORDER BY requested_at")
+                rows = cur.fetchall()
+                columns = [desc[0] for desc in cur.description]
+        return [self._pending_from_row(dict(zip(columns, row))) for row in rows]
+
     def get(self, action_id: str) -> dict[str, Any] | None:
         """Load one approval ledger row by UUID.
 
@@ -138,6 +148,47 @@ class ApprovalLedger:
         if not row:
             raise KeyError(action_id)
         payload = row["action_payload"]
+        return action_from_payload(payload if isinstance(payload, dict) else json.loads(payload))
+
+    def mark_queued(self, action_id: str, decided_by: str) -> PendingAction:
+        """Move a pending approval to queued so repeated clicks cannot enqueue it again."""
+
+        with connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE approval_ledger
+                    SET status = 'queued', decided_by = %s, execution_result = %s::jsonb
+                    WHERE id = %s AND status = 'pending'
+                    """,
+                    (decided_by, json.dumps({"queued": True}), action_id),
+                )
+                if cur.rowcount != 1:
+                    raise ValueError("Approval is not pending")
+        updated = self.get(action_id)
+        return self._pending_from_row(updated)
+
+    def claim_for_execution(self, action_id: str) -> AgentAction | None:
+        """Atomically claim one queued approval for execution.
+
+        Returns None if another worker already claimed or completed it.
+        """
+
+        with connection_context() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE approval_ledger
+                    SET status = 'executing'
+                    WHERE id = %s AND status = 'queued'
+                    RETURNING action_payload
+                    """,
+                    (action_id,),
+                )
+                row = cur.fetchone()
+        if not row:
+            return None
+        payload = row[0]
         return action_from_payload(payload if isinstance(payload, dict) else json.loads(payload))
 
     def decide(self, action_id: str, status: str, decided_by: str, result: dict[str, Any] | None = None) -> PendingAction:

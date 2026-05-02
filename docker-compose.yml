@@ -68,7 +68,7 @@ services:
       PROJECT_ROOT: /app
       SECRETS_DIR: secrets
       GOOGLE_CLIENT_SECRET_FILE: /app/secrets/google_client_secret.json
-    command: celery -A worker.celery_app worker --loglevel=info
+    command: celery -A worker.celery_app worker --loglevel=info -Q actions,celery
     volumes:
       - ./memory:/app/memory
       - ./secrets:/app/secrets:ro

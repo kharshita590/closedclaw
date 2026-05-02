@@ -21,7 +21,7 @@ class PendingAction(BaseModel):
     payload: dict[str, Any]
     channel: str
     user_id: str
-    status: Literal["pending", "approved", "rejected"] = "pending"
+    status: Literal["pending", "queued", "approved", "rejected"] = "pending"
 
 
 class ChatResponse(BaseModel):

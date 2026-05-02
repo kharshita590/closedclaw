@@ -29,7 +29,9 @@ def execute_action_task(action_id: str) -> dict[str, Any]:
 
     ledger = ApprovalLedger()
     policy = PolicyEngine(ledger)
-    action = ledger.get_action(action_id)
+    action = ledger.claim_for_execution(action_id)
+    if action is None:
+        return {"ok": False, "skipped": True, "reason": "Approval was not queued for execution"}
     policy_result = policy.check(action)
     if not policy_result.allowed:
         result = {"ok": False, "policy_allowed": False, "reason": policy_result.reason}

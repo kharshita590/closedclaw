@@ -109,16 +109,10 @@ async def decide_approval(action_id: str, request: ApprovalRequest) -> PendingAc
         audit.event("approval_decided", action_id=action.id, decision="rejected", action_type=action.action_type)
         return action
 
+    try:
+        pending = approval_ledger.mark_queued(action_id, request.decided_by)
+    except ValueError:
+        raise HTTPException(status_code=409, detail="Approval was already queued or decided")
     execute_action_task.delay(action_id)
-    action = approval_ledger.get_action(action_id)
-    pending = PendingAction(
-        id=action_id,
-        action_type=action.action_type,
-        summary=action.to_human_readable(),
-        payload=action.model_dump(mode="json"),
-        channel="ledger",
-        user_id=row["requested_by"],
-        status="pending",
-    )
     audit.event("approval_queued", action_id=pending.id, action_type=pending.action_type, decided_by=request.decided_by)
     return pending
