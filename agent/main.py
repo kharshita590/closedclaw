@@ -14,6 +14,10 @@ from graph.agent_graph import PersonalAgentGraph
 from graph.state import ChatRequest, ChatResponse, PendingAction
 from security.auth import is_valid_api_key, require_auth
 from worker.tasks import execute_action_task
+from profiles.store import AgentProfileStore
+from skills.loader import SkillLoader
+from schedule.cron import next_run_from_cron
+from schedule.store import ScheduledActionStore
 
 try:
     from opentelemetry import trace
@@ -31,9 +35,13 @@ except ImportError:
     BatchSpanProcessor = None
 
 app = FastAPI(title="ClosedClaw Personal Agent")
+agent_profiles = AgentProfileStore()
 agent = PersonalAgentGraph()
 audit = AuditLogger()
 approval_ledger = ApprovalLedger()
+skill_loader = SkillLoader()
+skill_loader.load()
+schedule_store = ScheduledActionStore()
 
 
 class ApprovalRequest(BaseModel):
@@ -86,7 +94,20 @@ def config() -> dict[str, str | bool]:
 
 @app.post("/chat", response_model=ChatResponse, dependencies=[Depends(require_auth)])
 async def chat(request: ChatRequest) -> ChatResponse:
-    response = await agent.invoke(request)
+    profile = agent_profiles.find_for_sender(request.channel, request.user_id)
+    if profile:
+        from subgraphs.supervisor import SupervisorAgent
+
+        supervisor = SupervisorAgent(
+            system_prompt=profile.system_prompt,
+            allowed_intents=profile.allowed_intents,
+            llm_provider=profile.llm_provider,
+            llm_model=profile.llm_model,
+        )
+        routed_agent = PersonalAgentGraph(supervisor=supervisor)
+        response = await routed_agent.invoke(request)
+    else:
+        response = await agent.invoke(request)
     for action in response.actions:
         audit.event("approval_created", action_id=action.id, action_type=action.action_type, user_id=action.user_id)
     return response
@@ -95,6 +116,68 @@ async def chat(request: ChatRequest) -> ChatResponse:
 @app.get("/approvals", response_model=list[PendingAction], dependencies=[Depends(require_auth)])
 def list_approvals() -> list[PendingAction]:
     return approval_ledger.list_pending()
+
+
+@app.get("/skills", dependencies=[Depends(require_auth)])
+def list_skills() -> list[dict]:
+    skill_loader.load()
+    return [
+        {
+            "name": skill.name,
+            "description": skill.description,
+            "action_type": skill.action_type,
+            "risk_level": skill.risk_level,
+            "allowed_tools": skill.allowed_tools,
+            "enabled": skill.enabled,
+        }
+        for skill in skill_loader.list()
+    ]
+
+
+class SkillToggleRequest(BaseModel):
+    enabled: bool = True
+
+
+@app.post("/skills/{skill_name}", dependencies=[Depends(require_auth)])
+def toggle_skill(skill_name: str, req: SkillToggleRequest) -> dict:
+    skill_loader.load()
+    if not skill_loader.get(skill_name):
+        raise HTTPException(status_code=404, detail="Skill not found")
+    skill_loader.set_enabled(skill_name, req.enabled)
+    return {"ok": True, "name": skill_name, "enabled": req.enabled}
+
+
+class ScheduleRequest(BaseModel):
+    cron_expression: str
+    action_type: str
+    payload: dict
+    owner_user_id: str
+    enabled: bool = True
+
+
+@app.post("/schedule", dependencies=[Depends(require_auth)])
+def create_schedule(req: ScheduleRequest) -> dict:
+    next_run = next_run_from_cron(req.cron_expression)
+    scheduled_id = schedule_store.insert(req.cron_expression, req.action_type, req.payload, req.owner_user_id, next_run=next_run)
+    return {"ok": True, "id": scheduled_id, "next_run": next_run.isoformat() if next_run else None}
+
+
+@app.get("/schedule", dependencies=[Depends(require_auth)])
+def list_schedule() -> list[dict]:
+    rows = schedule_store.list_all()
+    return [
+        {
+            "id": row.id,
+            "cron_expression": row.cron_expression,
+            "action_type": row.action_type,
+            "payload": row.payload,
+            "owner_user_id": row.owner_user_id,
+            "enabled": row.enabled,
+            "last_run": row.last_run.isoformat() if row.last_run else None,
+            "next_run": row.next_run.isoformat() if row.next_run else None,
+        }
+        for row in rows
+    ]
 
 
 @app.post("/approvals/{action_id}", response_model=PendingAction, dependencies=[Depends(require_auth)])

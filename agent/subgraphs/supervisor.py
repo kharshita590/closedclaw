@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
@@ -13,25 +13,78 @@ from audit.logger import AuditLogger
 from graph.state import ChatRequest, ChatResponse
 from llm.client import LLMClient
 from policy.policy_engine import PolicyEngine
-from subgraphs.email_agent import EmailAgent
 from subgraphs.execution_plan import ExecutionPlan, ExecutionStep, StepResult
 from subgraphs.intent_router import HierarchicalIntentRouter, RouteDecision
-from subgraphs.research_agent import ResearchAgent
-from tools.calendar_tools import CalendarTools
-from tools.memory_tools import MemoryStore
+from skills.loader import SkillLoader
+
+if TYPE_CHECKING:  # pragma: no cover
+    from subgraphs.email_agent import EmailAgent
+    from subgraphs.research_agent import ResearchAgent
+    from tools.calendar_tools import CalendarTools
+    from tools.memory_tools import MemoryStore
+    from tools.browser_client import BrowserClient
 
 
 class SupervisorAgent:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        system_prompt: str | None = None,
+        allowed_intents: list[str] | None = None,
+        llm_provider: str | None = None,
+        llm_model: str | None = None,
+    ) -> None:
         self.audit = AuditLogger()
-        self.memory = MemoryStore()
-        self.email = EmailAgent()
-        self.calendar = CalendarTools()
-        self.research_agent = ResearchAgent()
-        self.llm = LLMClient()
+        # Lazy imports keep optional vendor deps (e.g. googleapiclient) from being
+        # required just to import the supervisor module or run unit tests.
+        try:
+            from tools.memory_tools import MemoryStore
+
+            self.memory = MemoryStore()
+        except Exception as exc:
+            self.audit.event("tool_init_failed", tool="memory", error=str(exc))
+            self.memory = None  # type: ignore[assignment]
+
+        try:
+            from subgraphs.email_agent import EmailAgent
+
+            self.email = EmailAgent()
+        except Exception as exc:
+            self.audit.event("tool_init_failed", tool="email", error=str(exc))
+            self.email = None  # type: ignore[assignment]
+
+        try:
+            from tools.calendar_tools import CalendarTools
+
+            self.calendar = CalendarTools()
+        except Exception as exc:
+            self.audit.event("tool_init_failed", tool="calendar", error=str(exc))
+            self.calendar = None  # type: ignore[assignment]
+
+        try:
+            from subgraphs.research_agent import ResearchAgent
+
+            self.research_agent = ResearchAgent()
+        except Exception as exc:
+            self.audit.event("tool_init_failed", tool="research_agent", error=str(exc))
+            self.research_agent = None  # type: ignore[assignment]
+
+        try:
+            from tools.browser_client import BrowserClient
+
+            self.browser = BrowserClient()
+        except Exception as exc:
+            self.audit.event("tool_init_failed", tool="browser", error=str(exc))
+            self.browser = None  # type: ignore[assignment]
+        base_llm = LLMClient()
+        self.llm = base_llm.with_overrides(provider=llm_provider, model=llm_model)
         self.router = HierarchicalIntentRouter(self.llm)
+        self.skills = SkillLoader()
+        self.skills.load()
         self.approvals = ApprovalLedger()
         self.policy = PolicyEngine(self.approvals)
+        self.system_prompt = system_prompt or ""
+        self.allowed_intents = allowed_intents or []
 
     async def handle(self, request: ChatRequest) -> ChatResponse:
         text = request.message.strip()
@@ -84,6 +137,7 @@ exact capabilities, identified by intent name:
   - browser: navigate to a URL or research a topic using a browser.
   - remember: save a note to memory.
   - search_memory: search previously saved notes.
+{self._skills_prompt_block()}
 
 Given the user message below, produce a JSON execution plan with this schema:
 {{
@@ -99,7 +153,7 @@ Given the user message below, produce a JSON execution plan with this schema:
 }}
 
 Rules you must follow:
-- Maximum 5 steps. If the message requires more, return only the first 5.
+- Maximum 8 steps. If the message requires more, return only the first 8.
 - Use depends_on_step to express data dependencies between steps.
   Example: if step 2 needs the result of step 1, set depends_on_step to 1.
 - Only use intent names from the list above. Never invent new ones.
@@ -149,7 +203,10 @@ User message: {text}
 
         step_results: dict[int, StepResult] = {}
         skipped: list[StepResult] = []
-        for step in plan.steps:
+        remaining_steps = list(plan.steps)
+        replans = 0
+        while remaining_steps:
+            step = remaining_steps.pop(0)
             dependency = step_results.get(step.depends_on_step) if step.depends_on_step is not None else None
             if step.depends_on_step is not None and (dependency is None or not dependency.ok):
                 if self._step_can_run_without_dependency(step, request):
@@ -168,6 +225,12 @@ User message: {text}
             result = await self._execute_single_step(request, step, context)
             step_results[step.step_id] = result
 
+            if not result.ok and self.llm.enabled() and replans < 2 and remaining_steps:
+                replans += 1
+                revised = await self._replan_after_failure(step.step_id, result.error or result.response_text, remaining_steps, request)
+                if revised:
+                    remaining_steps = revised
+
         successful = [result for result in step_results.values() if result.ok]
         failed = [result for result in step_results.values() if not result.ok and result not in skipped]
         if not successful:
@@ -177,9 +240,42 @@ User message: {text}
         response_parts = [result.response_text for result in step_results.values() if result.response_text]
         actions = [action for result in step_results.values() for action in result.actions]
         data = {f"step_{step_id}": result.data for step_id, result in step_results.items() if result.data}
+        suggestions = [r.suggested_followup for r in step_results.values() if r.suggested_followup]
+        if suggestions:
+            data["suggestions"] = suggestions
         for result in failed:
             data.setdefault(f"step_{result.step_id}", {"error": result.error})
         return ChatResponse(response="\n".join(response_parts), actions=actions, data=data)
+
+    async def _replan_after_failure(
+        self,
+        failed_step_id: int,
+        error: str,
+        remaining: list[ExecutionStep],
+        request: ChatRequest,
+    ) -> list[ExecutionStep] | None:
+        """Ask the LLM to revise remaining steps after a failure."""
+
+        remaining_payload = [step.model_dump(mode="json") for step in remaining]
+        prompt = f"""
+Step {failed_step_id} failed with this error: {error}
+Here are the remaining unexecuted steps:
+{json.dumps(remaining_payload, default=str)}
+
+Should we skip, retry, or replace any of them?
+Respond with a revised JSON plan using the same schema:
+{{
+  "steps": [{{"step_id": int, "intent": string, "description": string, "depends_on_step": int|null, "params": object}}]
+}}
+Return ONLY valid JSON.
+""".strip()
+        try:
+            payload = await self.llm.extract_json(prompt)
+            revised = ExecutionPlan.model_validate({**payload, "raw_message": request.message})
+            return list(revised.steps)
+        except Exception as exc:
+            self.audit.event("replan_failed", error=str(exc), failed_step=failed_step_id)
+            return None
 
     async def _execute_single_step(self, request: ChatRequest, step: ExecutionStep, context: dict[str, Any]) -> StepResult:
         """Execute one planned step through the existing typed supervisor handlers.
@@ -199,6 +295,19 @@ User message: {text}
         """
 
         try:
+            allowed = getattr(self, "allowed_intents", []) or []
+            if allowed and step.intent not in allowed:
+                return StepResult(
+                    step_id=step.step_id,
+                    intent=step.intent,
+                    ok=False,
+                    data={},
+                    response_text=f"Intent '{step.intent}' is not allowed for this agent profile.",
+                    error="intent_not_allowed",
+                )
+            if step.intent.startswith("skill."):
+                result = await self._execute_skill_step(request, step, context)
+                return result
             if step.intent == "latest_email":
                 sender = context.get("sender") or context.get("from") or context.get("from_address")
                 email_data = await self.email.get_latest_raw(sender=sender)
@@ -262,6 +371,71 @@ User message: {text}
             raise ValueError(f"No executor registered for intent {step.intent}")
         except Exception as exc:
             return StepResult(step_id=step.step_id, intent=step.intent, ok=False, data={}, response_text=f"Step {step.step_id} failed: {exc}", error=str(exc))
+
+    def _skills_prompt_block(self) -> str:
+        if not hasattr(self, "skills") or self.skills is None:  # type: ignore[truthy-bool]
+            return ""
+        skills = [skill for skill in self.skills.list() if skill.enabled]
+        if not skills:
+            return ""
+        lines = ["", "Installed skills (optional intents):"]
+        for skill in skills:
+            lines.append(f"  - {self.skills.intent_for_skill(skill.name)}: {skill.description}")
+        return "\n".join(lines)
+
+    async def _execute_skill_step(self, request: ChatRequest, step: ExecutionStep, context: dict[str, Any]) -> StepResult:
+        """Execute a skill by turning it into a typed action gated by policy/approvals."""
+
+        skill = self.skills.skill_for_intent(step.intent)
+        if not skill:
+            return StepResult(step_id=step.step_id, intent=step.intent, ok=False, data={}, response_text="Unknown skill intent.", error="unknown_skill")
+        if not skill.enabled:
+            return StepResult(step_id=step.step_id, intent=step.intent, ok=False, data={}, response_text=f"Skill '{skill.name}' is disabled.", error="skill_disabled")
+        if not self.llm.enabled():
+            return StepResult(step_id=step.step_id, intent=step.intent, ok=False, data={}, response_text="Skill execution requires an LLM provider.", error="llm_disabled")
+
+        action_model = self.skills.action_model_for_skill(skill)
+        prompt = f"""
+You are extracting parameters for a typed action.
+Action class: {skill.action_type}
+Return ONLY a JSON object containing fields expected by this action model.
+Do not invent secrets. Prefer null/empty when unsure.
+
+User message: {request.message}
+Context: {json.dumps(context, default=str)}
+""".strip()
+        payload = await self.llm.extract_json(prompt)
+        action = action_model.model_validate(payload)
+
+        loop = asyncio.get_running_loop()
+        policy = await loop.run_in_executor(None, lambda: self.policy.check(action))
+        if not policy.allowed:
+            await loop.run_in_executor(None, lambda: self.approvals.create(action, request.user_id, status="rejected", result={"reason": policy.reason}))
+            return StepResult(step_id=step.step_id, intent=step.intent, ok=False, data={"policy_reason": policy.reason}, response_text=f"Skill action rejected by policy: {policy.reason}", error=policy.reason)
+
+        # Risk enforcement: medium/high always require approval.
+        if skill.risk_level in {"medium", "high"}:
+            pending = await loop.run_in_executor(None, lambda: self.approvals.create(action, request.user_id))
+            return StepResult(
+                step_id=step.step_id,
+                intent=step.intent,
+                ok=True,
+                data={"skill": skill.name, "action": action.model_dump(mode="json")},
+                response_text=f"I prepared a '{skill.name}' action for approval.",
+                actions=[pending],
+            )
+
+        # low risk: optionally run autonomously (still policy checked).
+        if not self.skills.allow_autonomous_low_risk:
+            pending = await loop.run_in_executor(None, lambda: self.approvals.create(action, request.user_id))
+            return StepResult(step_id=step.step_id, intent=step.intent, ok=True, data={"skill": skill.name}, response_text=f"I prepared a '{skill.name}' action for approval.", actions=[pending])
+
+        from actions.executor import ActionExecutor
+
+        executor = ActionExecutor(self.policy)
+        result = await executor.execute_approved(action)
+        await loop.run_in_executor(None, lambda: self.approvals.create(action, request.user_id, status="approved", result={"autonomous": True, **result}))
+        return StepResult(step_id=step.step_id, intent=step.intent, ok=bool(result.get("ok")), data={"result": result}, response_text=result.get("result") if isinstance(result.get("result"), str) else "Skill executed.")
 
     async def _execute_route(self, request: ChatRequest, decision: RouteDecision) -> ChatResponse:
         text = request.message.strip()
@@ -401,9 +575,22 @@ User message: {text}
 
         if not url:
             return ChatResponse(response="Send the form URL and the values you want filled.")
-        fields = self._extract_form_values(request.message)
-        required = self._default_form_fields()
-        missing = [field for field in required if field not in fields]
+        parsed_fields = self._parse_kv_fields(request.message)
+        discovered = await self._discover_form_fields(url)
+        if not discovered:
+            if not parsed_fields:
+                return ChatResponse(
+                    response=(
+                        "I can fill the form, but I couldn't discover its fields automatically. "
+                        "Send the values you want filled as `Field: value` (one per line). "
+                        "I will create an approval before submitting."
+                    ),
+                    data={"form_url": url, "discovered_fields": [], "known_fields": {}},
+                )
+            required = list(parsed_fields.keys())
+        else:
+            required = [item["label"] for item in discovered if item.get("required")] or [item["label"] for item in discovered]
+        missing = [field for field in required if field not in parsed_fields]
         if missing:
             lines = [
                 "I can fill the form, but I need these values first:",
@@ -411,9 +598,23 @@ User message: {text}
                 "",
                 "Send them as `Field: value`. I will create an approval before submitting.",
             ]
-            return ChatResponse(response="\n".join(lines), data={"form_url": url, "missing_fields": missing, "known_fields": fields})
+            return ChatResponse(
+                response="\n".join(lines),
+                data={
+                    "form_url": url,
+                    "missing_fields": missing,
+                    "known_fields": parsed_fields,
+                    "discovered_fields": discovered,
+                },
+            )
 
-        action_plan = BrowserFormSubmitAction(url=url, fields={field: fields[field] for field in required}, submit=True)
+        action_plan = BrowserFormSubmitAction(
+            url=url,
+            fields={field: parsed_fields[field] for field in required},
+            submit=True,
+            discover_fields=False,
+            discovered_fields=discovered,
+        )
         policy = self.policy.check(action_plan)
         if not policy.allowed:
             self.approvals.create(action_plan, request.user_id, status="rejected", result={"reason": policy.reason})
@@ -521,58 +722,50 @@ User message: {message}
         lowered = text.lower()
         return "form" in lowered and any(word in lowered for word in ["fill", "submit", "google form", "forms.gle"])
 
-    def _default_form_fields(self) -> list[str]:
-        """Return the common required fields for the current internship consent form."""
+    def _parse_kv_fields(self, text: str) -> dict[str, str]:
+        """Parse `Field: value` pairs from user text, keeping keys as provided."""
 
-        return [
-            "University Roll no.",
-            "Name",
-            "Branch",
-            "KIET E-Mail Id",
-            "Contact no.",
-            "Year of Passing",
-            "Gender",
-            "Residential Area",
-            "Source for Internship",
-        ]
-
-    def _extract_form_values(self, text: str) -> dict[str, str]:
-        """Extract `Field: value` pairs and aliases from a user form-fill message."""
-
-        aliases = {
-            "roll no": "University Roll no.",
-            "roll number": "University Roll no.",
-            "university roll no": "University Roll no.",
-            "university roll no.": "University Roll no.",
-            "name": "Name",
-            "branch": "Branch",
-            "kiet email": "KIET E-Mail Id",
-            "kiet e-mail id": "KIET E-Mail Id",
-            "email": "KIET E-Mail Id",
-            "contact": "Contact no.",
-            "contact no": "Contact no.",
-            "phone": "Contact no.",
-            "year of passing": "Year of Passing",
-            "passing year": "Year of Passing",
-            "gender": "Gender",
-            "residential area": "Residential Area",
-            "residential": "Residential Area",
-            "source for internship": "Source for Internship",
-            "source": "Source for Internship",
-        }
         fields: dict[str, str] = {}
         for line in text.splitlines():
             if ":" not in line:
                 continue
-            raw_key, raw_value = line.split(":", 1)
-            key = re.sub(r"\s+", " ", raw_key.strip().lower())
-            value = raw_value.strip()
-            if not value:
+            if re.match(r"^\s*https?://", line.strip(), flags=re.IGNORECASE):
                 continue
-            canonical = aliases.get(key)
-            if canonical:
-                fields[canonical] = value
+            raw_key, raw_value = line.split(":", 1)
+            key = re.sub(r"\s+", " ", raw_key.strip())
+            value = raw_value.strip()
+            if not key or not value:
+                continue
+            if key.strip().lower() in {"http", "https"}:
+                continue
+            fields[key] = value
         return fields
+
+    async def _discover_form_fields(self, url: str) -> list[dict[str, Any]]:
+        """Discover visible form fields through the browser sandbox."""
+
+        try:
+            payload = await self.browser.form_fields(url)
+        except Exception as exc:
+            self.audit.event("form_discovery_failed", url=url, error=str(exc))
+            return []
+        fields = payload.get("fields")
+        if not isinstance(fields, list):
+            return []
+        out: list[dict[str, Any]] = []
+        for item in fields:
+            if not isinstance(item, dict):
+                continue
+            label = item.get("label")
+            if isinstance(label, str) and label.strip():
+                out.append(
+                    {
+                        "label": label.strip(),
+                        "input_type": str(item.get("input_type", "text")),
+                        "required": bool(item.get("required", False)),
+                    }
+                )
+        return out
 
     def _looks_sequential(self, text: str) -> bool:
         """Return whether text contains conjunctions that imply ordered actions."""

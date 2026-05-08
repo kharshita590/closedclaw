@@ -9,4 +9,5 @@ COPY ../channel_policy.py /app/channel_policy.py
 COPY ../enabled_channels.py /app/enabled_channels.py
 
 ENV PYTHONUNBUFFERED=1
-CMD ["uvicorn", "bridge:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["python", "-m", "bridge"]
+

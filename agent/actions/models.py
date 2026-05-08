@@ -126,6 +126,8 @@ class BrowserFormSubmitAction(AgentAction):
     action_type: Literal["browser.form_submit"] = "browser.form_submit"
     url: str = Field(min_length=1, max_length=2000)
     fields: dict[str, str] = Field(default_factory=dict, max_length=50)
+    discover_fields: bool = True
+    discovered_fields: list[dict[str, Any]] = Field(default_factory=list, max_length=200)
     submit: bool = True
 
     @field_validator("url")
@@ -152,15 +154,9 @@ def action_from_payload(payload: dict[str, Any]) -> ActionUnion:
     """Rehydrates a typed action from ledger JSON."""
 
     action_type = payload.get("action_type")
-    model_by_type = {
-        "email.send": SendEmailAction,
-        "email.delete": DeleteEmailAction,
-        "email.clear_spam": ClearSpamAction,
-        "calendar.create_event": CreateCalendarEventAction,
-        "browser.navigate": BrowserNavigateAction,
-        "browser.form_submit": BrowserFormSubmitAction,
-    }
-    model = model_by_type.get(action_type)
+    from actions.registry import action_model_by_type
+
+    model = action_model_by_type(str(action_type))
     if not model:
         raise ValueError(f"Unknown action_type: {action_type}")
     return model.model_validate(payload)

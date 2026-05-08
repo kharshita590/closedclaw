@@ -9,6 +9,7 @@ from fastapi import FastAPI, Request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from channel_policy import ChannelPolicy, PairingStore  # noqa: E402
+from enabled_channels import channel_enabled  # noqa: E402
 
 AGENT_URL = os.getenv("AGENT_URL", "http://agent:8000").rstrip("/")
 AGENT_API_KEY = os.getenv("AGENT_API_KEY") or os.getenv("AGENT_API_KEYS", "").split(",")[0].strip()
@@ -26,6 +27,8 @@ def health() -> dict[str, str]:
 
 @app.post("/telegram/webhook")
 async def telegram_webhook(request: Request) -> dict:
+    if not channel_enabled("telegram"):
+        return {"ok": True, "disabled": True}
     payload = await request.json()
     message = payload.get("message") or payload.get("edited_message") or {}
     chat = message.get("chat", {})

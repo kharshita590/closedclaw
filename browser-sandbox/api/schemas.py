@@ -32,3 +32,14 @@ class BrowserFormSubmitRequest(BaseModel):
     url: str
     fields: dict[str, str] = Field(default_factory=dict)
     submit: bool = True
+
+
+class FormField(BaseModel):
+    label: str
+    input_type: str
+    required: bool = False
+
+
+class FormFieldsResponse(BaseModel):
+    url: str
+    fields: list[FormField] = Field(default_factory=list)

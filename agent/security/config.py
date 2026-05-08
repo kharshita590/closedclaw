@@ -26,6 +26,7 @@ class SecuritySettings:
             "adult.example",
             "phishing.example",
         }
+        self.browser_content_max_chars = int(os.getenv("BROWSER_CONTENT_MAX_CHARS", "8000"))
         self.max_email_body_chars = int(os.getenv("MAX_EMAIL_BODY_CHARS", "10000"))
         self.max_action_payload_bytes = int(os.getenv("MAX_ACTION_PAYLOAD_BYTES", "20000"))
         self.action_rate_limit_per_hour = int(os.getenv("ACTION_RATE_LIMIT_PER_HOUR", "10"))

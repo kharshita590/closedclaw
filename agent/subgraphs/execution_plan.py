@@ -7,16 +7,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-PlanIntent = Literal[
-    "latest_email",
-    "summarize_email",
-    "draft_email",
-    "destructive_email",
-    "calendar",
-    "browser",
-    "remember",
-    "search_memory",
-]
+PlanIntent = str
 
 
 class ExecutionStep(BaseModel):
@@ -46,9 +37,10 @@ class ExecutionPlan(BaseModel):
     def enforce_max_steps(cls, steps: list[ExecutionStep]) -> list[ExecutionStep]:
         """Reject execution plans that exceed the configured bounded loop length."""
 
-        max_steps = int(os.getenv("EXECUTION_LOOP_MAX_STEPS", "5"))
-        if len(steps) > max_steps:
-            raise ValueError(f"Execution plans may include at most {max_steps} steps.")
+        hard_limit = int(os.getenv("PLAN_STEP_HARD_LIMIT", os.getenv("EXECUTION_LOOP_MAX_STEPS", "8")))
+        hard_limit = min(max(hard_limit, 1), 12)
+        if len(steps) > hard_limit:
+            raise ValueError(f"Execution plans may include at most {hard_limit} steps.")
         return steps
 
     @property
@@ -68,3 +60,4 @@ class StepResult(BaseModel):
     response_text: str = Field(description="Human-readable response text produced by the step.")
     error: str | None = Field(default=None, description="Error message when ok is False.")
     actions: list[Any] = Field(default_factory=list, description="Approval actions created by this step, if any.")
+    suggested_followup: str | None = Field(default=None, description="Optional suggestion for a next user-visible action.")

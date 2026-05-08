@@ -6,8 +6,8 @@ from subgraphs.supervisor import SupervisorAgent
 
 
 class PersonalAgentGraph:
-    def __init__(self) -> None:
-        self.supervisor = SupervisorAgent()
+    def __init__(self, supervisor: SupervisorAgent | None = None) -> None:
+        self.supervisor = supervisor or SupervisorAgent()
         self.checkpointer = SQLiteCheckpointer()
 
     async def invoke(self, request: ChatRequest) -> ChatResponse:

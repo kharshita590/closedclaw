@@ -21,7 +21,10 @@ def postgres_database(monkeypatch: pytest.MonkeyPatch):
     if not database_url:
         pytest.skip("TEST_DATABASE_URL or DATABASE_URL is required for PostgreSQL tests")
     monkeypatch.setenv("DATABASE_URL", database_url)
-    conn = psycopg2.connect(database_url)
+    try:
+        conn = psycopg2.connect(database_url)
+    except psycopg2.OperationalError as exc:
+        pytest.skip(f"PostgreSQL unavailable for tests: {exc}")
     conn.autocommit = True
     with conn.cursor() as cur:
         cur.execute("DROP TABLE IF EXISTS approval_ledger CASCADE")

@@ -83,6 +83,30 @@ services:
       browser-sandbox:
         condition: service_started
 
+  beat:
+    build: ./agent
+    container_name: beat
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PROJECT_ROOT: /app
+      SECRETS_DIR: secrets
+      GOOGLE_CLIENT_SECRET_FILE: /app/secrets/google_client_secret.json
+    command: celery -A worker.celery_app beat --loglevel=info
+    volumes:
+      - ./memory:/app/memory
+      - ./secrets:/app/secrets:ro
+      - ./logs:/app/logs
+    networks:
+      - internal
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      browser-sandbox:
+        condition: service_started
+
   browser-sandbox:
     build: ./browser-sandbox
     container_name: browser-sandbox
@@ -157,12 +181,62 @@ services:
   #     - internal
 
   # whatsapp-bridge:
-  #   build: ./bridges/whatsapp
+  #   build:
+  #     context: .
+  #     dockerfile: bridges/whatsapp/Dockerfile
   #   container_name: whatsapp-bridge
+  #   restart: unless-stopped
+  #   env_file: .env
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #   networks:
+  #     - internal
+
+  # whatsapp-sidecar:
+  #   build:
+  #     context: ./bridges/whatsapp
+  #     dockerfile: sidecar.Dockerfile
+  #   container_name: whatsapp-sidecar
   #   restart: unless-stopped
   #   env_file: .env
   #   volumes:
   #     - whatsapp_session:/app/.wwebjs_auth
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #   networks:
+  #     - internal
+
+  # discord-bridge:
+  #   build:
+  #     context: .
+  #     dockerfile: bridges/discord/Dockerfile
+  #   container_name: discord-bridge
+  #   restart: unless-stopped
+  #   env_file: .env
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #   networks:
+  #     - internal
+
+  # signal-cli-rest-api:
+  #   image: bbernhard/signal-cli-rest-api:latest
+  #   container_name: signal-cli-rest-api
+  #   restart: unless-stopped
+  #   environment:
+  #     - MODE=native
+  #   networks:
+  #     - internal
+
+  # signal-bridge:
+  #   build:
+  #     context: .
+  #     dockerfile: bridges/signal/Dockerfile
+  #   container_name: signal-bridge
+  #   restart: unless-stopped
+  #   env_file: .env
   #   depends_on:
   #     postgres:
   #       condition: service_healthy

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from llm.client import LLMClient, LLMDecision
+from skills.loader import SkillLoader
 
 RouteDomain = Literal["email", "calendar", "browser", "memory", "general"]
 
@@ -30,6 +31,8 @@ class HierarchicalIntentRouter:
 
     def __init__(self, llm: LLMClient | None = None) -> None:
         self.llm = llm or LLMClient()
+        self.skills = SkillLoader()
+        self.skills.load()
 
     async def route(self, message: str, context: dict[str, Any] | None = None) -> RouteDecision:
         text = message.strip()
@@ -55,6 +58,9 @@ class HierarchicalIntentRouter:
 
     def _rule_domain(self, text: str) -> RouteDomain:
         lowered = text.lower()
+        for skill in self.skills.list():
+            if skill.enabled and skill.name.lower() in lowered:
+                return "general"
         if lowered.startswith("remember ") or lowered.startswith("search memory "):
             return "memory"
         if self._has_email_signal(lowered):
@@ -67,6 +73,9 @@ class HierarchicalIntentRouter:
 
     def _route_domain_intent(self, domain: RouteDomain, text: str) -> RouteDecision:
         lowered = text.lower()
+        for skill in self.skills.list():
+            if skill.enabled and skill.name.lower() in lowered:
+                return RouteDecision(domain="general", intent=self.skills.intent_for_skill(skill.name), confidence=0.7)
         if domain == "email":
             return self._route_email(text, lowered)
         if domain == "calendar":

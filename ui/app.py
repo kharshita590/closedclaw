@@ -48,6 +48,18 @@ with left:
             st.error(f"Agent unavailable: {exc}")
 
     data = st.session_state.get("last_data", {})
+    suggestions = data.get("suggestions") if isinstance(data, dict) else None
+    if isinstance(suggestions, list) and suggestions:
+        st.caption("Suggested follow-ups:")
+        for suggestion in suggestions[:5]:
+            if st.button(str(suggestion), key=f"sugg_{suggestion}"):
+                st.session_state.messages.append({"role": "user", "content": str(suggestion)})
+                payload = {"message": str(suggestion), "channel": "ui", "user_id": os.getenv("USER", "local-user")}
+                result = httpx.post(f"{AGENT_URL}/chat", headers=_agent_headers(), json=payload, timeout=120).json()
+                answer = result["response"]
+                st.session_state.messages.append({"role": "assistant", "content": answer})
+                st.session_state.last_data = result.get("data", {})
+                st.rerun()
     render_browser_result(data.get("browser", {}))
     if data.get("events"):
         st.subheader("Calendar")
@@ -60,6 +72,36 @@ with right:
         st.json(config)
     except Exception as exc:
         st.caption(f"Config unavailable: {exc}")
+
+    st.subheader("Skills")
+    try:
+        skills = httpx.get(f"{AGENT_URL}/skills", headers=_agent_headers(), timeout=5).json()
+        for skill in skills:
+            enabled = bool(skill.get("enabled", True))
+            label = f"{skill.get('name')} ({skill.get('risk_level')})"
+            new_enabled = st.toggle(label, value=enabled, key=f"skill_{skill.get('name')}")
+            if new_enabled != enabled:
+                httpx.post(
+                    f"{AGENT_URL}/skills/{skill.get('name')}",
+                    headers=_agent_headers(),
+                    json={"enabled": new_enabled},
+                    timeout=10,
+                )
+                st.rerun()
+    except Exception as exc:
+        st.caption(f"Skills unavailable: {exc}")
+
+    st.subheader("Scheduled tasks")
+    try:
+        schedules = httpx.get(f"{AGENT_URL}/schedule", headers=_agent_headers(), timeout=5).json()
+        if schedules:
+            for row in schedules:
+                st.caption(f"{row['id']} — {row['cron_expression']} — {row['action_type']}")
+                st.caption(f"next_run={row.get('next_run')} last_run={row.get('last_run')}")
+        else:
+            st.caption("No scheduled tasks yet.")
+    except Exception as exc:
+        st.caption(f"Schedule unavailable: {exc}")
 
     render_approvals(AGENT_URL, _agent_headers())
     st.subheader("Recent audit")

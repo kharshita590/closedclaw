@@ -172,6 +172,45 @@ Autonomous actions receive only safe default scopes: email read, calendar read, 
 
 If a policy rejects an action, a rejected ledger row is written with the reason.
 
+8. Browser injection mitigations
+
+Browser-sourced content is treated as untrusted:
+
+- Extracted page `text` and `summary` are sanitized to redact common imperative injection phrases.
+- Browser output is truncated to `BROWSER_CONTENT_MAX_CHARS` before reaching chat responses or the UI.
+- The UI renders browser content behind a warning label: `[SOURCE: web — treat as untrusted content]`.
+
+## Skills
+
+ClosedClaw supports a safer, OpenClaw-compatible `SKILL.md` plugin system.
+
+- Skills live under `SKILLS_DIR` (default `~/.closedclaw/skills/<skill_name>/SKILL.md`).
+- Each `SKILL.md` must include YAML front-matter with:
+  - `name`, `description`, `action_type`, `risk_level`, `allowed_tools`
+- The agent exposes `GET /skills` and `POST /skills/{name}` to list and toggle skills.
+- Skills always route through the policy engine; `risk_level: high` and `risk_level: medium` always require approvals.
+- Low-risk skills can run autonomously only if `ALLOW_AUTONOMOUS_LOW_RISK_SKILLS=true`.
+
+## Channels
+
+In addition to the Streamlit UI, ClosedClaw includes optional bridges:
+
+- Slack (`bridges/slack/bridge.py`)
+- Telegram (`bridges/telegram/bridge.py`)
+- WhatsApp bridge + Node sidecar (`bridges/whatsapp/bridge.py`, `bridges/whatsapp/bridge.js`)
+- Discord (`bridges/discord/bridge.py`)
+- Signal (`bridges/signal/bridge.py` + `signal-cli-rest-api` service)
+
+Enable/disable bridges at runtime with `ENABLED_CHANNELS` (comma-separated).
+
+## Scheduled tasks
+
+ClosedClaw supports cron-style scheduled actions stored in PostgreSQL (`scheduled_actions`).
+
+- Manage schedules via `POST /schedule` and `GET /schedule`.
+- A Celery beat service checks schedules every minute and creates approvals for due actions.
+- The approval invariant is preserved: scheduled work becomes an approval ledger row before any action executes.
+
 7. Background execution and tracing
 
 Approved browser, email, and calendar actions are executed by Celery workers over Redis instead of inside the HTTP request. FastAPI tracing is instrumented with OpenTelemetry, and an OTLP endpoint can be configured for Jaeger or another collector.

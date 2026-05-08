@@ -41,6 +41,18 @@ class LLMClient:
         self.ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://host.docker.internal:11434").rstrip("/")
         self.last_raw_response = ""
 
+    def with_overrides(self, *, provider: str | None = None, model: str | None = None) -> "LLMClient":
+        """Return a shallow copy with provider/model overrides (no env mutation)."""
+
+        clone = LLMClient.__new__(LLMClient)
+        clone.provider = (provider or self.provider).strip().lower()
+        clone.model = model or self.model
+        clone.api_key = self.api_key
+        clone.api_base_url = self.api_base_url
+        clone.ollama_base_url = self.ollama_base_url
+        clone.last_raw_response = ""
+        return clone
+
     def enabled(self) -> bool:
         if self.provider == "ollama":
             return bool(self.model)

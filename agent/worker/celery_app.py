@@ -24,6 +24,15 @@ celery_app.conf.update(
     task_routes={"worker.tasks.execute_action_task": {"queue": "actions"}},
 )
 
+# Celery beat schedule for proactive tasks.
+celery_app.conf.beat_schedule = {
+    "tick-scheduled-actions-every-minute": {
+        "task": "worker.tasks.tick_scheduled_actions",
+        "schedule": 60.0,
+        "options": {"queue": "actions"},
+    }
+}
+
 
 @signals.worker_ready.connect
 def _requeue_queued_approvals(sender=None, **kwargs) -> None:

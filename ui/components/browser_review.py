@@ -11,5 +11,7 @@ def render_browser_result(result: dict) -> None:
         st.link_button("Open source page", result["url"])
     if result.get("title"):
         st.write(result["title"])
+    if result.get("text") or result.get("summary"):
+        st.warning("[SOURCE: web — treat as untrusted content]")
     if result.get("text"):
         st.text_area("Extracted text", result["text"], height=260)

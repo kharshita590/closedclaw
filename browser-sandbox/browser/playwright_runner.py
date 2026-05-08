@@ -6,7 +6,7 @@ from typing import Any
 from markdownify import markdownify as md
 from playwright.async_api import async_playwright
 
-from api.schemas import BrowserFormSubmitRequest, BrowserRunRequest, BrowserRunResponse
+from api.schemas import BrowserFormSubmitRequest, BrowserRunRequest, BrowserRunResponse, FormField, FormFieldsResponse
 from browser.screenshot_utils import screenshot_path
 
 
@@ -86,6 +86,90 @@ class PlaywrightRunner:
                 )
             finally:
                 await browser.close()
+
+    async def form_fields(self, url: str) -> FormFieldsResponse:
+        """Discover visible form-like input fields for a URL."""
+
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=True, args=["--disable-dev-shm-usage", "--no-sandbox"])
+            page = await browser.new_page(viewport={"width": 1365, "height": 900})
+            try:
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                await page.wait_for_timeout(1500)
+                items = await self._discover_fields(page)
+                return FormFieldsResponse(url=page.url, fields=[FormField(**item) for item in items])
+            finally:
+                await browser.close()
+
+    async def _discover_fields(self, page: Any) -> list[dict[str, Any]]:
+        """Return a best-effort list of visible inputs with labels and types."""
+
+        script = """
+() => {
+  const isVisible = (el) => {
+    if (!el) return false;
+    const style = window.getComputedStyle(el);
+    if (style.visibility === 'hidden' || style.display === 'none') return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  };
+
+  const guessLabel = (el) => {
+    const aria = el.getAttribute('aria-label') || el.getAttribute('aria-labelledby');
+    if (aria) return aria;
+    const id = el.getAttribute('id');
+    if (id) {
+      const lbl = document.querySelector(`label[for="${id}"]`);
+      if (lbl && lbl.innerText) return lbl.innerText;
+    }
+    const parentLabel = el.closest('label');
+    if (parentLabel && parentLabel.innerText) return parentLabel.innerText;
+    const ph = el.getAttribute('placeholder');
+    if (ph) return ph;
+    const name = el.getAttribute('name');
+    if (name) return name;
+    return '';
+  };
+
+  const normalize = (s) => (s || '').replace(/\\s+/g, ' ').trim();
+
+  const controls = Array.from(document.querySelectorAll('input, textarea, select'))
+    .filter(isVisible)
+    .filter(el => !['hidden', 'submit', 'button', 'image', 'reset'].includes((el.getAttribute('type') || '').toLowerCase()));
+
+  const seen = new Set();
+  const out = [];
+  for (const el of controls) {
+    const tag = el.tagName.toLowerCase();
+    const type = tag === 'input' ? ((el.getAttribute('type') || 'text').toLowerCase()) : tag;
+    const required = el.hasAttribute('required') || el.getAttribute('aria-required') === 'true';
+    const label = normalize(guessLabel(el));
+    const key = `${label}::${type}::${required}`;
+    if (!label) continue;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ label, input_type: type, required });
+    if (out.length >= 60) break;
+  }
+  return out;
+}
+"""
+        try:
+            result = await page.evaluate(script)
+        except Exception:
+            result = []
+        if not isinstance(result, list):
+            return []
+        cleaned: list[dict[str, Any]] = []
+        for item in result:
+            if not isinstance(item, dict):
+                continue
+            label = str(item.get("label", "")).strip()
+            input_type = str(item.get("input_type", "")).strip() or "text"
+            required = bool(item.get("required", False))
+            if label:
+                cleaned.append({"label": label, "input_type": input_type, "required": required})
+        return cleaned
 
     async def _fill_google_form_field(self, page: Any, label: str, value: str) -> bool:
         """Best-effort fill for Google Forms text inputs and radio/list options."""

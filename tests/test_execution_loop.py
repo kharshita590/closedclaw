@@ -264,27 +264,20 @@ def test_form_fill_request_asks_for_missing_values() -> None:
         )
     )
 
-    assert "I can fill the form, but I need these values first:" in response.response
-    assert "University Roll no." in response.data["missing_fields"]
+    assert "I can fill the form, but I couldn't discover its fields automatically." in response.response
+    assert response.data["form_url"] == "https://forms.gle/example"
     assert not response.actions
 
 
 def test_form_fill_request_creates_approval_when_values_are_present() -> None:
     agent = supervisor()
     message = """https://forms.gle/example fill this google form
-Roll no: 123
-Name: Test User
-Branch: CSE-AI
-KIET email: test@kiet.edu
-Contact no: 9999999999
-Year of passing: 2028
-Gender: Male
-Residential area: Hostler
-Source for internship: Byself"""
+Email: test@kiet.edu
+Name: Test User"""
 
     response = asyncio.run(agent._browser_form_response(ChatRequest(message=message), "https://forms.gle/example"))
 
     assert response.actions
     assert response.actions[0].action_type == "browser.form_submit"
-    assert response.actions[0].payload["fields"]["Branch"] == "CSE-AI"
+    assert response.actions[0].payload["fields"]["Email"] == "test@kiet.edu"
     assert response.actions[0].payload["submit"] is True
